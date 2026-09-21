@@ -28,7 +28,8 @@ const ValidationWizardScreen = ({ route }) => {
     const { store, setValue } = useTempStore();
 
     // Safely default to empty values if they don't exist in the store yet
-    const photos = store.validationPhotos || [];
+    const facePhoto = store.validationFacePhoto || null;
+    const idPhoto = store.validationIdPhoto || null;
     const notes = store.validationNotes || '';
     const resultScore = store.resultScore || '';
     const confidenceScore = store.confidenceScore || '';
@@ -37,7 +38,7 @@ const ValidationWizardScreen = ({ route }) => {
     const subjectExists = store.subjectExists ?? true;
 
     // Wizard States
-    const [step, setStep] = useState(0); // 0 = QR Handshake, 1 = Photos, 2 = Scores, 3 = Notes
+    const [step, setStep] = useState(0); // 0 = QR Handshake, 1 = Face, 2 = ID, 3 = Scores, 4 = Notes
     const [isLoading, setIsLoading] = useState(false); // Used for UI loading overlays
     const [isScanning, setIsScanning] = useState(true); // Prevents rapid-fire scans
     const [isSubmitting, setIsSubmitting] = useState(false); // Used for final submission
@@ -49,7 +50,8 @@ const ValidationWizardScreen = ({ route }) => {
     // Clear tempstore if the user navigates to a different order
     useEffect(() => {
         if (store.validationOrderId !== orderData.id) {
-            setValue('validationPhotos', []);
+            setValue('validationFacePhoto', null);
+            setValue('validationIdPhoto', null);
             setValue('validationNotes', '');
             setValue('resultScore', '');
             setValue('confidenceScore', '');
@@ -130,8 +132,8 @@ const ValidationWizardScreen = ({ route }) => {
         }
     };
 
-    // Opens the native camera, crops the image, and saves the local path
-    const handleTakePhoto = async () => {
+    // Opens the native camera, crops the image, and stores the local path under the given temp-store key.
+    const handleTakePhoto = async (storeKey) => {
         try {
             const image = await ImagePicker.openCamera({
                 width: 1024,
@@ -140,8 +142,7 @@ const ValidationWizardScreen = ({ route }) => {
                 mediaType: 'photo',
                 compressImageQuality: 0.8,
             });
-
-            setValue('validationPhotos', [...photos, image.path]);
+            setValue(storeKey, image.path);
         } catch (error) {
             if (error.message !== 'User cancelled image selection') {
                 console.warn('Camera Error:', error);
@@ -150,97 +151,62 @@ const ValidationWizardScreen = ({ route }) => {
         }
     };
 
-    // Atomic Submission: S3 Uploads -> Fleetbase Activity Completion
+    // Atomic submission: presign (order token) → PUT both captures → POST scores + keys to BeeSure → close the Fleetbase activity with only the proof.
     const runValidationSubmission = async () => {
         setIsSubmitting(true);
-        const s3Keys = [];
-
         try {
-            // 1. Request Pre-signed URLs from Beesure Backend
-            const presignRes = await fetch(PRESIGN_API_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ count: photos.length }),
-            });
-
-            if (!presignRes.ok) throw new Error('Failed to fetch pre-signed URLs.');
-            const { presignedData } = await presignRes.json();
-
-            // 2. Upload images directly to S3
-            for (let i = 0; i < photos.length; i++) {
-                const localUri = photos[i];
-                const { uploadUrl, key } = presignedData[i];
-                const imgBlob = await (await fetch(localUri)).blob();
-
-                const s3Res = await fetch(uploadUrl, {
-                    method: 'PUT',
-                    body: imgBlob,
-                    headers: { 'Content-Type': imgBlob.type || 'image/jpeg' },
-                });
-
-                if (!s3Res.ok) throw new Error(`S3 Upload failed for image ${i}`);
-                s3Keys.push(key);
-            }
-
-            // 3. Beesure Backend Call
-            // Send the validation data to backend for processing and storage
-            // Safely extract meta, handling Fleetbase's attribute wrapper if it exists
             const meta = order.meta || (order.attributes && order.attributes.meta) || {};
-            // The Fallback Chain
-            const internalValidationId = meta.validationId || meta.validation_id || meta.external_order_id;
-
-            if (!internalValidationId) {
-                throw new Error('Critical Error: This order is missing the BeeSure Validation ID.');
+            const orderToken = meta.beesure_token;
+            if (!orderToken) {
+                throw new Error('Critical Error: This order is missing the BeeSure order token.');
             }
-
             if (!driver || !driver.id) {
                 throw new Error('Critical Error: Driver session lost. Please log out and log back in.');
             }
+            const authHeaders = { 'Content-Type': 'application/json', 'X-BeeSure-Order-Token': orderToken };
 
-            const payload = {
-                validationId: internalValidationId,
-                fleetbaseDriverId: driver.id,
-                fleetbaseOrderId: order.id,
-                reportType: 'LVA Field Report',
-                reportDetails: notes,
-                resultScore: store.resultScore,
-                confidenceScore: store.confidenceScore,
-                likenessScore: store.likenessScore,
-                vibeCheckScore: store.vibeCheckScore,
-                subjectExists: store.subjectExists,
-                s3Keys: s3Keys, // Pass the array of S3 keys we just generated
-            };
+            // 1. Presigned PUT URLs, one per role, keys derived by BeeSure.
+            const presignRes = await fetch(PRESIGN_API_URL, { method: 'POST', headers: authHeaders, body: JSON.stringify({ roles: ['lva_face', 'lva_id'] }) });
+            if (!presignRes.ok) throw new Error(`Failed to fetch pre-signed URLs (${presignRes.status}).`);
+            const { presignedData } = await presignRes.json();
+            const byRole = Object.fromEntries(presignedData.map((p) => [p.role, p]));
+            if (!byRole.lva_face || !byRole.lva_id) throw new Error('Pre-sign response was incomplete.');
 
-            const reportRes = await fetch(VALIDATION_COMPLETE_API_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
-            });
-
-            if (!reportRes.ok) {
-                throw new Error('Failed to save the validation report to BeeSure.');
+            // 2. Upload both captures straight to S3.
+            for (const [role, localUri] of [['lva_face', facePhoto], ['lva_id', idPhoto]]) {
+                const blob = await (await fetch(localUri)).blob();
+                const s3Res = await fetch(byRole[role].uploadUrl, { method: 'PUT', body: blob, headers: { 'Content-Type': 'image/jpeg' } });
+                if (!s3Res.ok) throw new Error(`S3 upload failed for ${role} (${s3Res.status}).`);
             }
 
-            // 4. Call Fleetbase to complete the order activity status using the Proof ID from Step 0
-            const fleetbasePayload = {
-                activity: {
-                    ...activity,
-                    status: 'completed',
-                    code: 'completed',
-                },
-                proof: store.fleetbaseProofId, // Retrieve from temp store
-                attributes: {
-                    validation_notes: notes,
-                    validation_s3_keys: s3Keys,
-                },
+            // 3. Report to BeeSure. reportId/validationId come from the token server-side.
+            const payload = {
+                fleetbaseDriverId: driver.id,
+                reportType: 'LVA Field Report',
+                reportDetails: notes,
+                resultScore: store.resultScore === '' ? null : parseInt(store.resultScore, 10),
+                confidenceScore: store.confidenceScore === '' ? null : parseInt(store.confidenceScore, 10),
+                likenessScore: store.likenessScore === '' ? null : parseInt(store.likenessScore, 10),
+                vibeCheckScore: store.vibeCheckScore === '' ? null : parseInt(store.vibeCheckScore, 10),
+                subjectExists: !!store.subjectExists,
+                attachments: { lva_face: byRole.lva_face.key, lva_id: byRole.lva_id.key },
             };
+            const reportRes = await fetch(VALIDATION_COMPLETE_API_URL, { method: 'POST', headers: authHeaders, body: JSON.stringify(payload) });
+            if (!reportRes.ok) {
+                const text = await reportRes.text();
+                throw new Error(`Failed to save the validation report to BeeSure (${reportRes.status}): ${text}`);
+            }
 
-            await order.updateActivity(fleetbasePayload);
+            // 4. Close the Fleetbase activity with the proof only — no report data or keys go to Fleetbase.
+            await order.updateActivity({
+                activity: { ...activity, status: 'completed', code: 'completed' },
+                proof: store.fleetbaseProofId,
+            });
 
             toast.success('Validation Submitted Successfully!');
 
-            // Clear the temp store
-            setValue('validationPhotos', []);
+            setValue('validationFacePhoto', null);
+            setValue('validationIdPhoto', null);
             setValue('validationNotes', '');
             setValue('resultScore', '');
             setValue('confidenceScore', '');
@@ -292,36 +258,55 @@ const ValidationWizardScreen = ({ route }) => {
             {step > 0 && (
                 <ScrollView contentContainerStyle={{ flexGrow: 1, paddingBottom: 40, padding: 16 }}>
                     <Text fontSize={24} fontWeight='bold' mb='$4'>
-                        Validation Step {step} of 3
+                        Validation Step {step} of 4
                     </Text>
 
                     {step === 1 && (
                         <YStack space='$4' flex={1}>
                             <Text fontSize={16} color='$textPrimary'>
-                                Take photos of the items or subject to validate condition.
+                                Take a clear photo of the subject's face.
                             </Text>
-
-                            <Button onPress={handleTakePhoto} bg='$info' color='white' pressStyle={{ opacity: 0.8 }}>
-                                Take Photo
+                            <Button onPress={() => handleTakePhoto('validationFacePhoto')} bg='$info' color='white' pressStyle={{ opacity: 0.8 }}>
+                                {facePhoto ? 'Retake face photo' : 'Take face photo'}
                             </Button>
-
-                            <XStack flexWrap='wrap' gap='$2' mt='$2'>
-                                {photos.map((uri, idx) => (
-                                    <YStack key={idx} width={100} height={100} bg='$gray3' borderRadius='$2' overflow='hidden'>
-                                        <Image source={{ uri }} width={100} height={100} />
-                                    </YStack>
-                                ))}
-                            </XStack>
-
+                            {facePhoto && (
+                                <YStack width={160} height={160} bg='$gray3' borderRadius='$2' overflow='hidden'>
+                                    <Image source={{ uri: facePhoto }} width={160} height={160} />
+                                </YStack>
+                            )}
                             <YStack flex={1} justifyContent='flex-end'>
-                                <Button bg='$success' color='white' disabled={photos.length === 0} opacity={photos.length === 0 ? 0.5 : 1} onPress={() => setStep(2)}>
-                                    Continue to Scores
+                                <Button bg='$success' color='white' disabled={!facePhoto} opacity={facePhoto ? 1 : 0.5} onPress={() => setStep(2)}>
+                                    Continue to ID
                                 </Button>
                             </YStack>
                         </YStack>
                     )}
 
                     {step === 2 && (
+                        <YStack space='$4' flex={1}>
+                            <Text fontSize={16} color='$textPrimary'>
+                                Take a photo of the subject's government ID, face side.
+                            </Text>
+                            <Button onPress={() => handleTakePhoto('validationIdPhoto')} bg='$info' color='white' pressStyle={{ opacity: 0.8 }}>
+                                {idPhoto ? 'Retake ID photo' : 'Take ID photo'}
+                            </Button>
+                            {idPhoto && (
+                                <YStack width={160} height={160} bg='$gray3' borderRadius='$2' overflow='hidden'>
+                                    <Image source={{ uri: idPhoto }} width={160} height={160} />
+                                </YStack>
+                            )}
+                            <YStack flex={1} justifyContent='flex-end' space='$3'>
+                                <Button onPress={() => setStep(1)} bg='$gray5' color='$textPrimary'>
+                                    Back to face
+                                </Button>
+                                <Button bg='$success' color='white' disabled={!idPhoto} opacity={idPhoto ? 1 : 0.5} onPress={() => setStep(3)}>
+                                    Continue to Scores
+                                </Button>
+                            </YStack>
+                        </YStack>
+                    )}
+
+                    {step === 3 && (
                         <YStack space='$4' flex={1}>
                             <Text fontSize={16} color='$textPrimary'>
                                 Enter Validation Scores (0-100)
@@ -382,17 +367,17 @@ const ValidationWizardScreen = ({ route }) => {
                             </YStack>
 
                             <YStack flex={1} justifyContent='flex-end' space='$3' mt='$4'>
-                                <Button onPress={() => setStep(1)} bg='$gray5' color='$textPrimary'>
-                                    Back to Photos
+                                <Button onPress={() => setStep(2)} bg='$gray5' color='$textPrimary'>
+                                    Back to ID
                                 </Button>
-                                <Button bg='$success' color='white' onPress={() => setStep(3)}>
+                                <Button bg='$success' color='white' onPress={() => setStep(4)}>
                                     Continue to Notes
                                 </Button>
                             </YStack>
                         </YStack>
                     )}
 
-                    {step === 3 && (
+                    {step === 4 && (
                         <YStack space='$4' flex={1}>
                             <Text fontSize={16} color='$textPrimary'>
                                 Additional Validation Notes
@@ -417,7 +402,7 @@ const ValidationWizardScreen = ({ route }) => {
                             />
 
                             <YStack flex={1} justifyContent='flex-end' space='$3'>
-                                <Button onPress={() => setStep(2)} bg='$gray5' color='$textPrimary'>
+                                <Button onPress={() => setStep(3)} bg='$gray5' color='$textPrimary'>
                                     Back to Scores
                                 </Button>
 
