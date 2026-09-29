@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import { FlatList, TextInput, Keyboard } from 'react-native';
+import { FlatList, TextInput } from 'react-native';
 import { countries, getEmojiFlag } from 'countries-list';
-import BottomSheet, { BottomSheetView, BottomSheetFlatList, BottomSheetTextInput } from '@gorhom/bottom-sheet';
+import BottomSheet, { BottomSheetFlatList, BottomSheetTextInput } from '@gorhom/bottom-sheet';
 import { useTheme, View, Text, Button, XStack, YStack, Input } from 'tamagui';
 import { Portal } from '@gorhom/portal';
 import { getCountryByPhoneCode, getCountryByISO2, parsePhoneNumber, debounce } from '../utils';
@@ -37,9 +37,10 @@ const PhoneInput = ({ value, onChange, bg, width = '100%', defaultCountryCode = 
     const [selectedCountry, setSelectedCountry] = useState(defaultValue.country);
     const [phoneNumber, setPhoneNumber] = useState(defaultValue.phoneNumber);
     const [searchTerm, setSearchTerm] = useState('');
+    const [isPickerOpen, setIsPickerOpen] = useState(false);
     const bottomSheetRef = useRef<BottomSheet>(null);
     const phoneInputRef = useRef(null);
-    const searchInputRef = useRef(null);
+    const focusPhoneInputOnCloseRef = useRef(false);
     const snapPoints = useMemo(() => ['50%', '75%'], []);
     const backgroundColor = bg ? bg : isDarkMode ? '$surface' : '$gray-200';
 
@@ -52,14 +53,24 @@ const PhoneInput = ({ value, onChange, bg, width = '100%', defaultCountryCode = 
 
     const openBottomSheet = () => {
         phoneInputRef.current?.blur();
-        bottomSheetRef.current?.collapse();
-        searchInputRef.current?.focus();
+        setSearchTerm('');
+        setIsPickerOpen(true);
     };
 
     const closeBottomSheet = () => {
-        Keyboard.dismiss();
+        focusPhoneInputOnCloseRef.current = true;
         bottomSheetRef.current?.close();
-        phoneInputRef.current?.focus();
+    };
+
+    const handleBottomSheetClose = () => {
+        // Unmount the picker once it has closed. Android runs with windowSoftInputMode=adjustResize, so the sheet
+        // container resizes with the keyboard, and @gorhom/bottom-sheet leaves a closed sheet at the closed position of
+        // the container size it was closed in; a closed-but-mounted sheet therefore reappears after the keyboard hides.
+        setIsPickerOpen(false);
+        if (focusPhoneInputOnCloseRef.current) {
+            focusPhoneInputOnCloseRef.current = false;
+            phoneInputRef.current?.focus();
+        }
     };
 
     const handleInputFocus = () => {
@@ -106,46 +117,49 @@ const PhoneInput = ({ value, onChange, bg, width = '100%', defaultCountryCode = 
                 />
             </XStack>
 
-            <Portal hostName='MainPortal'>
-                <BottomSheet
-                    ref={bottomSheetRef}
-                    index={-1}
-                    snapPoints={snapPoints}
-                    keyboardBehavior='extend'
-                    keyboardBlurBehavior='none'
-                    enableDynamicSizing={false}
-                    enablePanDownToClose={true}
-                    enableOverDrag={false}
-                    style={{ flex: 1, width: '100%' }}
-                    backgroundStyle={{ backgroundColor: theme.background.val, borderWidth: 1, borderColor: theme.borderColorWithShadow.val }}
-                    handleIndicatorStyle={{ backgroundColor: theme.secondary.val }}
-                >
-                    <YStack px='$2'>
-                        <BottomSheetTextInput
-                            ref={searchInputRef}
-                            placeholder='Search country'
-                            onChangeText={setSearchTerm}
-                            autoCapitalize={false}
-                            autoComplete='off'
-                            autoCorrect={false}
-                            style={{
-                                color: theme.textPrimary.val,
-                                backgroundColor: theme.surface.val,
-                                borderWidth: 1,
-                                borderColor: theme.borderColor.val,
-                                padding: 14,
-                                borderRadius: 12,
-                                fontSize: 13,
-                                marginBottom: 10,
-                            }}
-                        />
-                    </YStack>
-                    <BottomSheetView
-                        style={{ flex: 1, backgroundColor: theme.background.val, paddingHorizontal: 8, borderColor: theme.borderColorWithShadow.val, borderWidth: 1, borderTopWidth: 0 }}
+            {isPickerOpen && (
+                <Portal hostName='MainPortal'>
+                    <BottomSheet
+                        ref={bottomSheetRef}
+                        index={0}
+                        snapPoints={snapPoints}
+                        keyboardBehavior='extend'
+                        keyboardBlurBehavior='none'
+                        android_keyboardInputMode='adjustResize'
+                        onClose={handleBottomSheetClose}
+                        enableDynamicSizing={false}
+                        enablePanDownToClose={true}
+                        enableOverDrag={false}
+                        style={{ flex: 1, width: '100%' }}
+                        backgroundStyle={{ backgroundColor: theme.background.val, borderWidth: 1, borderColor: theme.borderColorWithShadow.val }}
+                        handleIndicatorStyle={{ backgroundColor: theme.secondary.val }}
                     >
+                        <YStack px='$2'>
+                            <BottomSheetTextInput
+                                autoFocus
+                                placeholder='Search country'
+                                onChangeText={setSearchTerm}
+                                autoCapitalize={false}
+                                autoComplete='off'
+                                autoCorrect={false}
+                                style={{
+                                    color: theme.textPrimary.val,
+                                    backgroundColor: theme.surface.val,
+                                    borderWidth: 1,
+                                    borderColor: theme.borderColor.val,
+                                    padding: 14,
+                                    borderRadius: 12,
+                                    fontSize: 13,
+                                    marginBottom: 10,
+                                }}
+                            />
+                        </YStack>
                         <BottomSheetFlatList
                             data={filteredCountries}
                             keyExtractor={(item) => item.code}
+                            style={{ flex: 1, backgroundColor: theme.background.val, borderColor: theme.borderColorWithShadow.val, borderWidth: 1, borderTopWidth: 0 }}
+                            contentContainerStyle={{ paddingHorizontal: 8 }}
+                            keyboardShouldPersistTaps='handled'
                             renderItem={({ item }) => (
                                 <Button
                                     size='$4'
@@ -172,9 +186,9 @@ const PhoneInput = ({ value, onChange, bg, width = '100%', defaultCountryCode = 
                                 </Button>
                             )}
                         />
-                    </BottomSheetView>
-                </BottomSheet>
-            </Portal>
+                    </BottomSheet>
+                </Portal>
+            )}
         </YStack>
     );
 };
