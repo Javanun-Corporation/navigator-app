@@ -8,6 +8,7 @@ import { Button, Image, Spinner, Text, XStack, YStack, useTheme } from 'tamagui'
 import LoadingOverlay from '../components/LoadingOverlay';
 import QrCodeScanner from '../components/QrCodeScanner';
 import { useAuth } from '../contexts/AuthContext';
+import { useOrderManager } from '../contexts/OrderManagerContext';
 import { useTempStore } from '../contexts/TempStoreContext';
 import useFleetbase from '../hooks/use-fleetbase';
 import { toast } from '../utils/toast';
@@ -23,6 +24,7 @@ const ValidationWizardScreen = ({ route }) => {
     const navigation = useNavigation();
     const theme = useTheme();
     const { driver } = useAuth();
+    const { updateStorageOrder, reloadCurrentOrders, reloadNearbyOrders } = useOrderManager();
 
     const order = new Order(orderData, adapter);
     const { store, setValue } = useTempStore();
@@ -198,10 +200,18 @@ const ValidationWizardScreen = ({ route }) => {
             }
 
             // 4. Close the Fleetbase activity with the proof only — no report data or keys go to Fleetbase.
-            await order.updateActivity({
+            const updatedOrder = await order.updateActivity({
                 activity: { ...activity, status: 'completed', code: 'completed' },
                 proof: store.fleetbaseProofId,
             });
+
+            // 5. Push the closed order into the cached lists and refetch, so the orders screen shows it
+            // completed as soon as the driver lands there instead of after a manual pull-to-refresh.
+            if (updatedOrder && typeof updatedOrder.serialize === 'function') {
+                updateStorageOrder(updatedOrder.serialize(), ['current', 'active', 'recent']);
+            }
+            reloadCurrentOrders({}, { setLoadingFlag: false });
+            reloadNearbyOrders({}, { setLoadingFlag: false });
 
             toast.success('Validation Submitted Successfully!');
 
@@ -216,7 +226,9 @@ const ValidationWizardScreen = ({ route }) => {
             setValue('fleetbaseProofId', null);
             setValue('validationOrderId', null);
 
-            navigation.goBack();
+            // The order is finished for this driver, so return to the orders list (which also reloads on
+            // focus) rather than the order screen underneath, which still holds the pre-submit order.
+            navigation.navigate('DriverOrderManagement');
         } catch (error) {
             console.error('Submission Flow Error:', error);
             Alert.alert('Submission Failed', error.message || 'An unexpected error occurred.');
