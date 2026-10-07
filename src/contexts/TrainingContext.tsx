@@ -11,6 +11,10 @@ const TRAINING_QUIZ_API_URL = Config.TRAINING_QUIZ_API_URL;
 const TRAINING_STATUS_API_URL = Config.TRAINING_STATUS_API_URL;
 const TRAINING_QUIZ_SUBMIT_API_URL = Config.TRAINING_QUIZ_SUBMIT_API_URL;
 
+// DEV BYPASS: the /training routes aren't deployed on the dev API yet, so a debug build with the
+// training URLs left blank treats every driver as already trained. Remove once the routes exist.
+const DEV_SKIP_TRAINING = __DEV__ && !TRAINING_STATUS_API_URL;
+
 export const TrainingProvider = ({ children }) => {
     const { driver, isAuthenticated } = useAuth();
     // Cached in MMKV so the gate has an instant answer on boot instead of waiting on a network
@@ -21,7 +25,7 @@ export const TrainingProvider = ({ children }) => {
     const [quiz, setQuiz] = useState([]);
 
     const refreshStatus = useCallback(async () => {
-        if (!driver?.id) return;
+        if (!driver?.id || DEV_SKIP_TRAINING) return;
 
         setIsCheckingStatus(true);
         try {
@@ -97,7 +101,7 @@ export const TrainingProvider = ({ children }) => {
 
     const value = useMemo(
         () => ({
-            hasPassedTraining: !!hasPassedTraining,
+            hasPassedTraining: DEV_SKIP_TRAINING || !!hasPassedTraining,
             isCheckingStatus,
             modules,
             quiz,

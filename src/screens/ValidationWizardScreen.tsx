@@ -241,21 +241,16 @@ const ValidationWizardScreen = ({ route }) => {
                 throw new Error(`Failed to save the validation report to BeeSure (HTTP ${reportRes.status}).`);
             }
 
-            // 4. Call Fleetbase to complete the order activity status using the Proof ID from Step 0
-            const fleetbasePayload = {
+            // 4. Close the Fleetbase activity with only the proof - no report data (notes, scores,
+            // attachment keys) reaches Fleetbase. That data lives in BeeSure's own backend only.
+            await order.updateActivity({
                 activity: {
                     ...activity,
                     status: 'completed',
                     code: 'completed',
                 },
                 proof: store.fleetbaseProofId, // Retrieve from temp store
-                attributes: {
-                    validation_notes: notes,
-                    validation_attachments: attachments,
-                },
-            };
-
-            await order.updateActivity(fleetbasePayload);
+            });
 
             toast.success('Validation Submitted Successfully!');
 
