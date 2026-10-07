@@ -3,13 +3,21 @@ import { Order, Place } from '@fleetbase/sdk';
 import { useNavigation } from '@react-navigation/native';
 import React, { useEffect, useState } from 'react';
 import { Alert, ScrollView, TextInput } from 'react-native';
-import ImagePicker from 'react-native-image-crop-picker';
-import { Button, Image, Spinner, Text, XStack, YStack, useTheme } from 'tamagui';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Button, Spinner, Text, XStack, YStack, useTheme } from 'tamagui';
+import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
+import { faCheck, faChevronLeft, faChevronRight, faClipboardCheck, faNoteSticky, faXmark } from '@fortawesome/free-solid-svg-icons';
+import AutomatedCaptureFlow from '../components/AutomatedCaptureFlow';
 import LoadingOverlay from '../components/LoadingOverlay';
 import QrCodeScanner from '../components/QrCodeScanner';
+import ScoreInfoButton from '../components/ScoreInfoButton';
+import ScoreWidgetDevToggle from '../components/ScoreWidgetDevToggle';
+import { ScoreInputWidget } from '../components/score-inputs';
+import { DEFAULT_SCORE_WIDGET_TYPE, SCORE_WIDGET_TYPE_STORAGE_KEY } from '../components/score-inputs/scoreNormalization';
 import { useAuth } from '../contexts/AuthContext';
 import { useTempStore } from '../contexts/TempStoreContext';
 import useFleetbase from '../hooks/use-fleetbase';
+import useStorage from '../hooks/use-storage';
 import { toast } from '../utils/toast';
 
 import Config from 'react-native-config';
@@ -17,12 +25,28 @@ import Config from 'react-native-config';
 const PRESIGN_API_URL = Config.PRESIGN_API_URL;
 const VALIDATION_COMPLETE_API_URL = Config.VALIDATION_COMPLETE_API_URL;
 
+const SCORE_LABELS = {
+    resultScore: 'Result Score',
+    confidenceScore: 'Confidence Score',
+    likenessScore: 'Likeness Score',
+    vibeCheckScore: 'Vibe Check Score',
+};
+
+const SCORE_DESCRIPTIONS = {
+    resultScore: 'Overall outcome of this validation - how closely what you observed matches what was expected for this order.',
+    confidenceScore: 'How confident you are in your assessment, based on photo clarity, lighting, and how clearly you could verify the subject.',
+    likenessScore: 'How closely the subject in your photos matches the reference photo or description on file for this order.',
+    vibeCheckScore: "A general gut-check of the situation - does anything about this delivery or validation feel off or inconsistent?",
+};
+
 const ValidationWizardScreen = ({ route }) => {
     const { activity, order: orderData } = route.params;
     const { adapter } = useFleetbase();
     const navigation = useNavigation();
     const theme = useTheme();
+    const insets = useSafeAreaInsets();
     const { driver } = useAuth();
+    const [scoreWidgetType] = useStorage(SCORE_WIDGET_TYPE_STORAGE_KEY, DEFAULT_SCORE_WIDGET_TYPE);
 
     const order = new Order(orderData, adapter);
     const { store, setValue } = useTempStore();
@@ -30,10 +54,10 @@ const ValidationWizardScreen = ({ route }) => {
     // Safely default to empty values if they don't exist in the store yet
     const photos = store.validationPhotos || [];
     const notes = store.validationNotes || '';
-    const resultScore = store.resultScore || '';
-    const confidenceScore = store.confidenceScore || '';
-    const likenessScore = store.likenessScore || '';
-    const vibeCheckScore = store.vibeCheckScore || '';
+    const resultScore = store.resultScore ?? null;
+    const confidenceScore = store.confidenceScore ?? null;
+    const likenessScore = store.likenessScore ?? null;
+    const vibeCheckScore = store.vibeCheckScore ?? null;
     const subjectExists = store.subjectExists ?? true;
 
     // Wizard States
@@ -42,25 +66,23 @@ const ValidationWizardScreen = ({ route }) => {
     const [isScanning, setIsScanning] = useState(true); // Prevents rapid-fire scans
     const [isSubmitting, setIsSubmitting] = useState(false); // Used for final submission
 
-    // New State for Decoupled Handshake
-    const [scannedQrValue, setScannedQrValue] = useState(null);
-    const [qrSubject, setQrSubject] = useState(null);
-
     // Clear tempstore if the user navigates to a different order
     useEffect(() => {
         if (store.validationOrderId !== orderData.id) {
             setValue('validationPhotos', []);
             setValue('validationNotes', '');
-            setValue('resultScore', '');
-            setValue('confidenceScore', '');
-            setValue('likenessScore', '');
-            setValue('vibeCheckScore', '');
+            setValue('resultScore', null);
+            setValue('confidenceScore', null);
+            setValue('likenessScore', null);
+            setValue('vibeCheckScore', null);
             setValue('subjectExists', true);
             setValue('validationOrderId', orderData.id);
         }
     }, [orderData.id]);
 
     // Handle QR Code Scan - SERVER SIDE VALIDATION
+    // Fires automatically the instant the scanner reads a valid code - there is no
+    // manual "confirm" step, the handshake kicks off immediately.
     const handleQrCodeScan = async (data) => {
         if (!isScanning) return;
         setIsScanning(false);
@@ -105,7 +127,7 @@ const ValidationWizardScreen = ({ route }) => {
 
                 // Save the Proof ID to your temp store so we can attach it at the end
                 setValue('fleetbaseProofId', proof.id);
-                setStep(1); // Move to photos
+                setStep(1); // Move to photos - automatically, no manual confirmation
             } else {
                 throw new Error('No proof returned.');
             }
@@ -117,90 +139,86 @@ const ValidationWizardScreen = ({ route }) => {
         }
     };
 
-    // Helper to ensure scores stay between 0 and 100
-    const handleScoreChange = (key, text) => {
-        const numericValue = text.replace(/[^0-9]/g, '');
-        if (numericValue === '') {
-            setValue(key, '');
-            return;
-        }
-        const val = parseInt(numericValue, 10);
-        if (val >= 0 && val <= 100) {
-            setValue(key, val.toString());
-        }
+    // Called once the automated face + ID document capture sequence completes (after the
+    // user has had a chance to review/retake each photo). Advances straight to the scores step.
+    const handleCaptureFlowComplete = ({ facePhoto, documentFront, documentBack }) => {
+        setValue('validationPhotos', [facePhoto, documentFront, documentBack]);
+        toast.success('Face and ID photos captured.');
+        setStep(2);
     };
 
-    // Opens the native camera, crops the image, and saves the local path
-    const handleTakePhoto = async () => {
-        try {
-            const image = await ImagePicker.openCamera({
-                width: 1024,
-                height: 1024,
-                cropping: true,
-                mediaType: 'photo',
-                compressImageQuality: 0.8,
-            });
-
-            setValue('validationPhotos', [...photos, image.path]);
-        } catch (error) {
-            if (error.message !== 'User cancelled image selection') {
-                console.warn('Camera Error:', error);
-                Alert.alert('Error', 'Failed to open camera.');
-            }
-        }
+    const handleScoreChange = (key, value) => {
+        setValue(key, value);
     };
 
     // Atomic Submission: S3 Uploads -> Fleetbase Activity Completion
     const runValidationSubmission = async () => {
         setIsSubmitting(true);
-        const s3Keys = [];
 
         try {
+            // The BeeSure order token is minted once at order-dispatch time and stored in the
+            // Fleetbase order's own meta (FleetbaseOrderDispatcher sets meta.beesure_token when
+            // the order is created). It's the credential the presign/validation-complete
+            // endpoints require via the X-BeeSure-Order-Token header - it has nothing to do with
+            // the QR code scanned in step 0, which is a separate Fleetbase proof-of-delivery check.
+            const meta = order.meta || (order.attributes && order.attributes.meta) || {};
+            const orderToken = meta.beesure_token;
+
+            if (!orderToken) {
+                throw new Error('Critical Error: This order is missing its BeeSure order token.');
+            }
+
+            // Photos are always captured and stored in this fixed order: face, ID front, ID back.
+            const roles = ['lva_face', 'lva_id', 'lva_id_back'];
+            const authHeaders = {
+                'Content-Type': 'application/json',
+                'X-BeeSure-Order-Token': orderToken,
+            };
+
             // 1. Request Pre-signed URLs from Beesure Backend
             const presignRes = await fetch(PRESIGN_API_URL, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ count: photos.length }),
+                headers: authHeaders,
+                body: JSON.stringify({ roles }),
             });
 
-            if (!presignRes.ok) throw new Error('Failed to fetch pre-signed URLs.');
+            if (!presignRes.ok) {
+                const bodyText = await presignRes.text().catch(() => '');
+                console.warn('Presign request failed:', presignRes.status, bodyText);
+                throw new Error(`Failed to fetch pre-signed URLs (HTTP ${presignRes.status}).`);
+            }
             const { presignedData } = await presignRes.json();
 
-            // 2. Upload images directly to S3
-            for (let i = 0; i < photos.length; i++) {
+            // 2. Upload each photo to its matching presigned URL - matched by role, not array
+            // index, since the backend returns presignedData tagged with the role it's for.
+            const attachments = {};
+            for (let i = 0; i < roles.length; i++) {
+                const role = roles[i];
                 const localUri = photos[i];
-                const { uploadUrl, key } = presignedData[i];
-                const imgBlob = await (await fetch(localUri)).blob();
+                const presigned = presignedData.find((p) => p.role === role);
 
-                const s3Res = await fetch(uploadUrl, {
+                if (!localUri || !presigned) {
+                    throw new Error(`Missing photo or presigned URL for ${role}.`);
+                }
+
+                const imgBlob = await (await fetch(localUri)).blob();
+                const s3Res = await fetch(presigned.uploadUrl, {
                     method: 'PUT',
                     body: imgBlob,
                     headers: { 'Content-Type': imgBlob.type || 'image/jpeg' },
                 });
 
-                if (!s3Res.ok) throw new Error(`S3 Upload failed for image ${i}`);
-                s3Keys.push(key);
+                if (!s3Res.ok) throw new Error(`S3 Upload failed for ${role}`);
+                attachments[role] = presigned.key;
             }
 
-            // 3. Beesure Backend Call
-            // Send the validation data to backend for processing and storage
-            // Safely extract meta, handling Fleetbase's attribute wrapper if it exists
-            const meta = order.meta || (order.attributes && order.attributes.meta) || {};
-            // The Fallback Chain
-            const internalValidationId = meta.validationId || meta.validation_id || meta.external_order_id;
-
-            if (!internalValidationId) {
-                throw new Error('Critical Error: This order is missing the BeeSure Validation ID.');
-            }
-
+            // 3. Beesure Backend Call - save the validation report
             if (!driver || !driver.id) {
                 throw new Error('Critical Error: Driver session lost. Please log out and log back in.');
             }
 
             const payload = {
-                validationId: internalValidationId,
                 fleetbaseDriverId: driver.id,
-                fleetbaseOrderId: order.id,
                 reportType: 'LVA Field Report',
                 reportDetails: notes,
                 resultScore: store.resultScore,
@@ -208,17 +226,19 @@ const ValidationWizardScreen = ({ route }) => {
                 likenessScore: store.likenessScore,
                 vibeCheckScore: store.vibeCheckScore,
                 subjectExists: store.subjectExists,
-                s3Keys: s3Keys, // Pass the array of S3 keys we just generated
+                attachments,
             };
 
             const reportRes = await fetch(VALIDATION_COMPLETE_API_URL, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: authHeaders,
                 body: JSON.stringify(payload),
             });
 
             if (!reportRes.ok) {
-                throw new Error('Failed to save the validation report to BeeSure.');
+                const bodyText = await reportRes.text().catch(() => '');
+                console.warn('Validation report request failed:', reportRes.status, bodyText);
+                throw new Error(`Failed to save the validation report to BeeSure (HTTP ${reportRes.status}).`);
             }
 
             // 4. Call Fleetbase to complete the order activity status using the Proof ID from Step 0
@@ -231,7 +251,7 @@ const ValidationWizardScreen = ({ route }) => {
                 proof: store.fleetbaseProofId, // Retrieve from temp store
                 attributes: {
                     validation_notes: notes,
-                    validation_s3_keys: s3Keys,
+                    validation_attachments: attachments,
                 },
             };
 
@@ -242,10 +262,10 @@ const ValidationWizardScreen = ({ route }) => {
             // Clear the temp store
             setValue('validationPhotos', []);
             setValue('validationNotes', '');
-            setValue('resultScore', '');
-            setValue('confidenceScore', '');
-            setValue('likenessScore', '');
-            setValue('vibeCheckScore', '');
+            setValue('resultScore', null);
+            setValue('confidenceScore', null);
+            setValue('likenessScore', null);
+            setValue('vibeCheckScore', null);
             setValue('subjectExists', true);
             setValue('fleetbaseProofId', null);
             setValue('validationOrderId', null);
@@ -276,7 +296,7 @@ const ValidationWizardScreen = ({ route }) => {
                     </YStack>
 
                     <YStack flex={1} overflow='hidden' borderRadius='$4'>
-                        {isScanning && <QrCodeScanner onScan={handleQrCodeScan} manualCapture />}
+                        {isScanning && <QrCodeScanner onScan={handleQrCodeScan} />}
                     </YStack>
 
                     {/* DEV BYPASS: Remove before pushing to production */}
@@ -288,52 +308,85 @@ const ValidationWizardScreen = ({ route }) => {
                 </YStack>
             )}
 
-            {/* --- STEPS 1-3: VALIDATION WIZARD --- */}
-            {step > 0 && (
-                <ScrollView contentContainerStyle={{ flexGrow: 1, paddingBottom: 40, padding: 16 }}>
-                    <Text fontSize={24} fontWeight='bold' mb='$4'>
-                        Validation Step {step} of 3
-                    </Text>
+            {/* --- STEP 1: AUTOMATED FACE + ID CAPTURE --- */}
+            {/* Full-bleed (no padding/heading) so the camera gets the entire screen - the step
+                indicator and instructions are overlaid on top of the camera itself instead. */}
+            {step === 1 && (
+                <YStack flex={1} bg='#000'>
+                    <AutomatedCaptureFlow onComplete={handleCaptureFlowComplete} />
 
-                    {step === 1 && (
-                        <YStack space='$4' flex={1}>
-                            <Text fontSize={16} color='$textPrimary'>
-                                Take photos of the items or subject to validate condition.
-                            </Text>
-
-                            <Button onPress={handleTakePhoto} bg='$info' color='white' pressStyle={{ opacity: 0.8 }}>
-                                Take Photo
-                            </Button>
-
-                            <XStack flexWrap='wrap' gap='$2' mt='$2'>
-                                {photos.map((uri, idx) => (
-                                    <YStack key={idx} width={100} height={100} bg='$gray3' borderRadius='$2' overflow='hidden'>
-                                        <Image source={{ uri }} width={100} height={100} />
-                                    </YStack>
-                                ))}
-                            </XStack>
-
-                            <YStack flex={1} justifyContent='flex-end'>
-                                <Button bg='$success' color='white' disabled={photos.length === 0} opacity={photos.length === 0 ? 0.5 : 1} onPress={() => setStep(2)}>
-                                    Continue to Scores
-                                </Button>
-                            </YStack>
-                        </YStack>
+                    {/* DEV BYPASS: Remove before pushing to production */}
+                    {__DEV__ && (
+                        <Button
+                            pos='absolute'
+                            top={insets.top + 10}
+                            right='$3'
+                            zIndex={20}
+                            size='$2'
+                            bg='$warning'
+                            onPress={() => setStep(2)}
+                        >
+                            <Button.Text fontSize={11} fontWeight='700'>
+                                [DEV] Skip
+                            </Button.Text>
+                        </Button>
                     )}
+                </YStack>
+            )}
+
+            {/* --- STEPS 2-3: SCORES & NOTES --- */}
+            {step > 1 && (
+                <ScrollView contentContainerStyle={{ flexGrow: 1, paddingBottom: 32 }} showsVerticalScrollIndicator={false}>
+                    {/* Progress pills shared by both steps */}
+                    <XStack px='$4' pt='$4' pb='$1' space='$2'>
+                        {[
+                            { key: 2, label: 'Scores' },
+                            { key: 3, label: 'Notes' },
+                        ].map(({ key, label }) => {
+                            const isActive = step === key;
+                            const isDone = step > key;
+                            return (
+                                <XStack
+                                    key={key}
+                                    flex={1}
+                                    ai='center'
+                                    jc='center'
+                                    space='$1.5'
+                                    py='$2'
+                                    borderRadius={999}
+                                    bg={isActive ? '$info' : isDone ? '$success' : '$gray5'}
+                                >
+                                    {isDone ? (
+                                        <FontAwesomeIcon icon={faCheck} size={11} color='#fff' />
+                                    ) : (
+                                        <Text fontSize={11} fontWeight='700' color={isActive ? 'white' : '$textSecondary'}>
+                                            {key - 1}
+                                        </Text>
+                                    )}
+                                    <Text fontSize={12} fontWeight='700' color={isActive || isDone ? 'white' : '$textSecondary'}>
+                                        {label}
+                                    </Text>
+                                </XStack>
+                            );
+                        })}
+                    </XStack>
 
                     {step === 2 && (
-                        <YStack space='$4' flex={1}>
-                            <Text fontSize={16} color='$textPrimary'>
-                                Enter Validation Scores (0-100)
+                        <YStack px='$4' pt='$4' space='$4' flex={1}>
+                            <XStack ai='center' jc='space-between' flexWrap='wrap' gap='$2'>
+                                <XStack ai='center' space='$2'>
+                                    <FontAwesomeIcon icon={faClipboardCheck} size={16} color={theme.textPrimary?.val} />
+                                    <Text fontSize={20} fontWeight='700' color='$textPrimary'>
+                                        Validation Scores
+                                    </Text>
+                                </XStack>
+                                <ScoreWidgetDevToggle />
+                            </XStack>
+                            <Text fontSize={13} color='$textSecondary' mt={-8}>
+                                Rate each category based on what you observed
                             </Text>
 
                             {['resultScore', 'confidenceScore', 'likenessScore', 'vibeCheckScore'].map((scoreKey) => {
-                                const labels = {
-                                    resultScore: 'Result Score',
-                                    confidenceScore: 'Confidence Score',
-                                    likenessScore: 'Likeness Score',
-                                    vibeCheckScore: 'Vibe Check Score',
-                                };
                                 const values = {
                                     resultScore,
                                     confidenceScore,
@@ -342,93 +395,114 @@ const ValidationWizardScreen = ({ route }) => {
                                 };
 
                                 return (
-                                    <YStack key={scoreKey} space='$2'>
-                                        <Text color='$textPrimary'>{labels[scoreKey]}</Text>
-                                        <TextInput
-                                            style={{
-                                                height: 50,
-                                                borderColor: theme.gray8?.val || '#ccc',
-                                                borderWidth: 1,
-                                                borderRadius: 8,
-                                                padding: 12,
-                                                color: theme.textPrimary?.val || 'black',
-                                                backgroundColor: theme.background?.val,
-                                            }}
-                                            keyboardType='numeric'
-                                            placeholder='0 - 100'
-                                            placeholderTextColor='#999'
-                                            value={values[scoreKey]}
-                                            onChangeText={(text) => handleScoreChange(scoreKey, text)}
-                                        />
+                                    <YStack key={scoreKey} bg='$surface' borderWidth={1} borderColor='$borderColorWithShadow' borderRadius='$6' p='$4' space='$3'>
+                                        <XStack ai='center' space='$2'>
+                                            <Text fontSize={15} fontWeight='600' color='$textPrimary'>
+                                                {SCORE_LABELS[scoreKey]}
+                                            </Text>
+                                            <ScoreInfoButton title={SCORE_LABELS[scoreKey]} description={SCORE_DESCRIPTIONS[scoreKey]} />
+                                        </XStack>
+                                        <ScoreInputWidget widgetType={scoreWidgetType} value={values[scoreKey]} onChange={(value) => handleScoreChange(scoreKey, value)} />
                                     </YStack>
                                 );
                             })}
 
-                            <YStack space='$2' mt='$2'>
-                                <Text color='$textPrimary'>Subject Exists?</Text>
-                                <XStack space='$4'>
-                                    <Button flex={1} bg={subjectExists ? '$info' : '$gray5'} color={subjectExists ? 'white' : '$textPrimary'} onPress={() => setValue('subjectExists', true)}>
-                                        Yes
+                            <YStack bg='$surface' borderWidth={1} borderColor='$borderColorWithShadow' borderRadius='$6' p='$4' space='$3'>
+                                <Text fontSize={15} fontWeight='600' color='$textPrimary'>
+                                    Subject Exists?
+                                </Text>
+                                <XStack bg='$gray3' borderRadius={999} p='$1' space='$1'>
+                                    <Button flex={1} size='$3' borderRadius={999} bg={subjectExists ? '$success' : 'transparent'} onPress={() => setValue('subjectExists', true)}>
+                                        <Button.Icon>
+                                            <FontAwesomeIcon icon={faCheck} size={12} color={subjectExists ? 'white' : theme.textSecondary?.val} />
+                                        </Button.Icon>
+                                        <Button.Text color={subjectExists ? 'white' : '$textSecondary'} fontWeight='700'>
+                                            Yes
+                                        </Button.Text>
                                     </Button>
-                                    <Button
-                                        flex={1}
-                                        bg={!subjectExists ? '$info' : '$gray5'}
-                                        color={!subjectExists ? 'white' : '$textPrimary'}
-                                        onPress={() => setValue('subjectExists', false)}
-                                    >
-                                        No
+                                    <Button flex={1} size='$3' borderRadius={999} bg={!subjectExists ? '$error' : 'transparent'} onPress={() => setValue('subjectExists', false)}>
+                                        <Button.Icon>
+                                            <FontAwesomeIcon icon={faXmark} size={12} color={!subjectExists ? 'white' : theme.textSecondary?.val} />
+                                        </Button.Icon>
+                                        <Button.Text color={!subjectExists ? 'white' : '$textSecondary'} fontWeight='700'>
+                                            No
+                                        </Button.Text>
                                     </Button>
                                 </XStack>
                             </YStack>
 
-                            <YStack flex={1} justifyContent='flex-end' space='$3' mt='$4'>
-                                <Button onPress={() => setStep(1)} bg='$gray5' color='$textPrimary'>
-                                    Back to Photos
-                                </Button>
-                                <Button bg='$success' color='white' onPress={() => setStep(3)}>
-                                    Continue to Notes
-                                </Button>
+                            <YStack flex={1} justifyContent='flex-end' pt='$4'>
+                                <XStack space='$3'>
+                                    <Button flex={1} size='$5' bg='$gray5' onPress={() => setStep(1)}>
+                                        <Button.Icon>
+                                            <FontAwesomeIcon icon={faChevronLeft} size={13} color={theme.textPrimary?.val} />
+                                        </Button.Icon>
+                                        <Button.Text color='$textPrimary' fontWeight='600'>
+                                            Back
+                                        </Button.Text>
+                                    </Button>
+                                    <Button flex={2} size='$5' bg='$success' onPress={() => setStep(3)}>
+                                        <Button.Text color='white' fontWeight='700'>
+                                            Continue to Notes
+                                        </Button.Text>
+                                        <Button.Icon>
+                                            <FontAwesomeIcon icon={faChevronRight} size={13} color='white' />
+                                        </Button.Icon>
+                                    </Button>
+                                </XStack>
                             </YStack>
                         </YStack>
                     )}
 
                     {step === 3 && (
-                        <YStack space='$4' flex={1}>
-                            <Text fontSize={16} color='$textPrimary'>
-                                Additional Validation Notes
+                        <YStack px='$4' pt='$4' space='$4' flex={1}>
+                            <XStack ai='center' space='$2'>
+                                <FontAwesomeIcon icon={faNoteSticky} size={16} color={theme.textPrimary?.val} />
+                                <Text fontSize={20} fontWeight='700' color='$textPrimary'>
+                                    Final Notes
+                                </Text>
+                            </XStack>
+                            <Text fontSize={13} color='$textSecondary' mt={-8}>
+                                Optional - add any additional context for this validation
                             </Text>
 
-                            <TextInput
-                                style={{
-                                    height: 150,
-                                    borderColor: theme.gray8?.val || '#ccc',
-                                    borderWidth: 1,
-                                    borderRadius: 8,
-                                    padding: 12,
-                                    textAlignVertical: 'top',
-                                    color: theme.textPrimary?.val || 'black',
-                                    backgroundColor: theme.background?.val,
-                                }}
-                                multiline
-                                placeholder='Enter notes here...'
-                                placeholderTextColor='#999'
-                                value={notes}
-                                onChangeText={(text) => setValue('validationNotes', text)}
-                            />
+                            <YStack bg='$surface' borderWidth={1} borderColor='$borderColorWithShadow' borderRadius='$6' p='$1' space='$1'>
+                                <TextInput
+                                    style={{
+                                        height: 160,
+                                        padding: 12,
+                                        textAlignVertical: 'top',
+                                        color: theme.textPrimary?.val || 'black',
+                                        fontSize: 15,
+                                    }}
+                                    multiline
+                                    placeholder='Enter notes here...'
+                                    placeholderTextColor={theme.textSecondary?.val || '#999'}
+                                    value={notes}
+                                    onChangeText={(text) => setValue('validationNotes', text)}
+                                />
+                            </YStack>
 
-                            <YStack flex={1} justifyContent='flex-end' space='$3'>
-                                <Button onPress={() => setStep(2)} bg='$gray5' color='$textPrimary'>
-                                    Back to Scores
-                                </Button>
-
-                                <Button bg='$success' onPress={runValidationSubmission} disabled={isSubmitting}>
+                            <YStack flex={1} justifyContent='flex-end' space='$3' pt='$4'>
+                                <Button size='$5' bg='$success' onPress={runValidationSubmission} disabled={isSubmitting}>
                                     {isSubmitting ? (
                                         <Spinner color='white' />
                                     ) : (
-                                        <Text color='white' fontWeight='600'>
-                                            Complete & Finish Order
-                                        </Text>
+                                        <XStack ai='center' space='$2'>
+                                            <FontAwesomeIcon icon={faCheck} size={14} color='white' />
+                                            <Text color='white' fontWeight='700' fontSize={16}>
+                                                Complete & Finish Order
+                                            </Text>
+                                        </XStack>
                                     )}
+                                </Button>
+                                <Button size='$5' bg='$gray5' onPress={() => setStep(2)} disabled={isSubmitting}>
+                                    <Button.Icon>
+                                        <FontAwesomeIcon icon={faChevronLeft} size={13} color={theme.textPrimary?.val} />
+                                    </Button.Icon>
+                                    <Button.Text color='$textPrimary' fontWeight='600'>
+                                        Back to Scores
+                                    </Button.Text>
                                 </Button>
                             </YStack>
                         </YStack>

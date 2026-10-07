@@ -36,6 +36,7 @@ import ChatParticipantsScreen from '../screens/ChatParticipantsScreen';
 import CreateChatChannelScreen from '../screens/CreateChatChannelScreen';
 import CreateFuelReportScreen from '../screens/CreateFuelReportScreen';
 import CreateIssueScreen from '../screens/CreateIssueScreen';
+import DevMenuScreen from '../screens/DevMenuScreen';
 import DriverAccountScreen from '../screens/DriverAccountScreen';
 import DriverDashboardScreen from '../screens/DriverDashboardScreen';
 import DriverOrderManagementScreen from '../screens/DriverOrderManagementScreen';
@@ -521,6 +522,12 @@ const DriverAccountTab = createNativeStackNavigator({
         },
         PastOrders: {
             screen: PastOrdersScreen,
+            options: {
+                headerShown: false,
+            },
+        },
+        DevMenu: {
+            screen: DevMenuScreen,
             options: {
                 headerShown: false,
             },
