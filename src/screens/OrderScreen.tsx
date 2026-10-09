@@ -32,6 +32,7 @@ import useSocketClusterClient from '../hooks/use-socket-cluster-client';
 import { config, showActionSheet } from '../utils';
 import { formatDuration, formatMeters, smartHumanize } from '../utils/format';
 import { getCoordinates, restoreFleetbasePlace } from '../utils/location';
+import { FAILED_MESSAGE, FAILED_TITLE, HELD_TITLE, UNAVAILABLE_MESSAGE, UNAVAILABLE_TITLE, claimFirstAvailable, dismissMessage, dismissalKeysFor, findHeldSibling, heldMessage, listOpenSiblings } from '../utils/order-groups';
 import { toast } from '../utils/toast';
 
 const getOrderDestination = (order, adapter) => {
@@ -57,7 +58,7 @@ const OrderScreen = ({ route }) => {
     const { location } = useLocation();
     const { listen } = useSocketClusterClient();
     const { runWithLoading, isLoading } = usePromiseWithLoading();
-    const { updateStorageOrder, setDimissedOrders } = useOrderManager();
+    const { updateStorageOrder, setDimissedOrders, currentOrders, nearbyOrders, dismissedOrders, reloadCurrentOrders, reloadNearbyOrders } = useOrderManager();
     const { store, removeValue } = useTempStore();
     const [order, setOrder] = useState(new Order(params.order, adapter));
     const [activityLoading, setActivityLoading] = useState();
@@ -425,7 +426,13 @@ const OrderScreen = ({ route }) => {
         ]);
     }, [order, runWithLoading, navigation, setDimissedOrders]);
 
-    const handleAdhocAccept = useCallback(async () => {
+    const handleAdhocAccept = useCallback(() => {
+        const held = findHeldSibling(order, currentOrders, dismissedOrders);
+        if (held) {
+            Alert.alert(HELD_TITLE, heldMessage(held));
+            return;
+        }
+
         Alert.alert('Accept Ad-Hoc order?', 'By accepting this ad-hoc order it will become assigned to you and the order will start immediatley.', [
             {
                 text: 'Cancel',
@@ -437,20 +444,33 @@ const OrderScreen = ({ route }) => {
                     setIsAccepting(true);
 
                     try {
-                        const startedOrder = await order.start({ assign: driver.id });
-                        setOrder(startedOrder);
-                    } catch (err) {
-                        console.warn('Error assigning driver to ad-hoc order:', err);
+                        const result = await claimFirstAvailable([order, ...listOpenSiblings(order, nearbyOrders)], driver.id);
+                        if (result.outcome === 'accepted') {
+                            setOrder(result.order);
+                            if (result.order.id !== order.id) {
+                                navigation.setParams({ order: result.order.serialize() });
+                                toast.success(`Order ${order.getAttribute('tracking_number.tracking_number') ?? order.id} was already taken. You were assigned ${result.order.getAttribute('tracking_number.tracking_number') ?? result.order.id} instead.`);
+                            }
+                            reloadCurrentOrders();
+                            reloadNearbyOrders();
+                        } else if (result.outcome === 'unavailable') {
+                            Alert.alert(UNAVAILABLE_TITLE, UNAVAILABLE_MESSAGE);
+                            reloadNearbyOrders();
+                            navigation.goBack();
+                        } else {
+                            console.warn('Error assigning driver to ad-hoc order:', result.error);
+                            Alert.alert(FAILED_TITLE, FAILED_MESSAGE);
+                        }
                     } finally {
                         setIsAccepting(false);
                     }
                 },
             },
         ]);
-    }, [order, driver, setIsAccepting]);
+    }, [order, driver, currentOrders, nearbyOrders, dismissedOrders, reloadCurrentOrders, reloadNearbyOrders, navigation]);
 
     const handleAdhocDismissal = useCallback(() => {
-        Alert.alert('Dismiss Ad-Hoc order?', 'By dimissing this ad-hoc order it will no longer display as an available order.', [
+        Alert.alert('Dismiss Ad-Hoc order?', dismissMessage(listOpenSiblings(order, nearbyOrders).length), [
             {
                 text: 'Cancel',
                 style: 'cancel',
@@ -458,12 +478,13 @@ const OrderScreen = ({ route }) => {
             {
                 text: 'OK',
                 onPress: () => {
-                    setDimissedOrders((prevDismissedOrders) => [...prevDismissedOrders, order.id]);
+                    const keys = dismissalKeysFor(order);
+                    setDimissedOrders((prevDismissedOrders) => [...new Set([...prevDismissedOrders, ...keys])]);
                     navigation.goBack();
                 },
             },
         ]);
-    }, [order, setDimissedOrders]);
+    }, [order, nearbyOrders, setDimissedOrders, navigation]);
 
     useEffect(() => {
         if (!order) return;
