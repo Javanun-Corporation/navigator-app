@@ -1,10 +1,10 @@
-import { SHOW_FINISHED_LABEL, assignmentOf, buildOrderList, claimFirstAvailable, countHiddenFinishedOrders, dismissMessage, dismissalKeysFor, findHeldSibling, getChildIndex, getReportKey, heldMessage, hiddenFinishedMessage, isFinishedOrder, listOpenSiblings, listShownHeldOrders } from '../src/utils/order-groups';
+import { ACCEPT_CONFIRM_DELAY_MS, SHOW_FINISHED_LABEL, assignmentOf, buildOrderList, claimFirstAvailable, countHiddenFinishedOrders, dismissMessage, dismissalKeysFor, findHeldSibling, getChildIndex, getReportKey, heldMessage, hiddenFinishedMessage, isFinishedOrder, listOpenSiblings, listShownHeldOrders } from '../src/utils/order-groups';
 
 const REPORT = '8f14e45f-ceea-467a-9af6-1c0c3d0a1b11';
 const OTHER_REPORT = '0b2a1c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d';
 const ME = 'driver_me';
 
-// A stand-in for a Fleetbase SDK Order: getAttribute walks dotted paths like the SDK's lodash-style get, returns null for a missing path, and the optional `server` hooks script reload() and start().
+// A stand-in for a Fleetbase SDK Order: getAttribute walks dotted paths like the SDK's lodash-style get, returns null for a missing path, and the optional `server` hooks script reload() and start(). Without a start hook, start() assigns the driver, like Fleetbase.
 const makeOrder = (id, attributes = {}, server = {}) => {
     const order = {
         id,
@@ -14,7 +14,13 @@ const makeOrder = (id, attributes = {}, server = {}) => {
             return value === undefined ? fallback : value;
         },
         reload: jest.fn(async () => (server.reload ? server.reload(order) : order)),
-        start: jest.fn(async (params) => (server.start ? server.start(order, params) : order)),
+        start: jest.fn(async (params) => {
+            if (server.start) {
+                return server.start(order, params);
+            }
+            order.attributes.driver_assigned = { id: params.assign };
+            return order;
+        }),
     };
     return order;
 };
@@ -22,6 +28,20 @@ const makeOrder = (id, attributes = {}, server = {}) => {
 const sibling = (id, childIndex, extra = {}) => makeOrder(id, { meta: { report_id: REPORT, child_index: childIndex }, ...extra });
 const assignedTo = (driverId) => ({ id: driverId });
 const ids = (orders) => orders.map((order) => order.id);
+// claimFirstAvailable waits ACCEPT_CONFIRM_DELAY_MS after every successful start, so each test injects a wait that returns at once.
+const makeWait = () => jest.fn(async () => {});
+
+// A free sibling whose start() succeeds and whose later reads return what afterStart(order) gives, like the confirmation re-read after the accept.
+const startedThen = (id, childIndex, afterStart) => {
+    let started = false;
+    return makeOrder(id, { meta: { report_id: REPORT, child_index: childIndex } }, {
+        start: (order) => {
+            started = true;
+            return order;
+        },
+        reload: (order) => (started ? afterStart(order) : order),
+    });
+};
 
 describe('getReportKey', () => {
     test('reads meta.report_id', () => {
@@ -224,7 +244,7 @@ describe('claimFirstAvailable', () => {
     test('starts the first free candidate with the driver id', async () => {
         const first = sibling('o1', 1);
         const second = sibling('o2', 2);
-        const result = await claimFirstAvailable([first, second], ME);
+        const result = await claimFirstAvailable([first, second], ME, makeWait());
         expect(result.outcome).toBe('accepted');
         expect(result.order).toBe(first);
         expect(first.start).toHaveBeenCalledWith({ assign: ME });
@@ -235,7 +255,7 @@ describe('claimFirstAvailable', () => {
     test('skips a candidate that is already taken without calling start on it', async () => {
         const first = makeOrder('o1', { meta: { report_id: REPORT, child_index: 1 }, driver_assigned: assignedTo('driver_other') });
         const second = sibling('o2', 2);
-        const result = await claimFirstAvailable([first, second], ME);
+        const result = await claimFirstAvailable([first, second], ME, makeWait());
         expect(result.outcome).toBe('accepted');
         expect(result.order).toBe(second);
         expect(result.takenIds).toEqual(['o1']);
@@ -245,7 +265,7 @@ describe('claimFirstAvailable', () => {
     test('skips a released candidate (started, unassigned) without calling start on it', async () => {
         const released = sibling('o1', 1, { started: true });
         const second = sibling('o2', 2);
-        const result = await claimFirstAvailable([released, second], ME);
+        const result = await claimFirstAvailable([released, second], ME, makeWait());
         expect(result.outcome).toBe('accepted');
         expect(result.order).toBe(second);
         expect(result.takenIds).toEqual(['o1']);
@@ -262,7 +282,7 @@ describe('claimFirstAvailable', () => {
             reload: (order) => (started ? makeOrder('o1', { driver_assigned: assignedTo('driver_other') }) : order),
         });
         const second = sibling('o2', 2);
-        const result = await claimFirstAvailable([first, second], ME);
+        const result = await claimFirstAvailable([first, second], ME, makeWait());
         expect(result.outcome).toBe('accepted');
         expect(result.order).toBe(second);
         expect(result.takenIds).toEqual(['o1']);
@@ -271,7 +291,7 @@ describe('claimFirstAvailable', () => {
     test('reports unavailable, without starting anything, when every candidate is taken', async () => {
         const taken = (id, index) => makeOrder(id, { meta: { report_id: REPORT, child_index: index }, driver_assigned: assignedTo('driver_other') });
         const candidates = [taken('o1', 1), taken('o2', 2), taken('o3', 3)];
-        const result = await claimFirstAvailable(candidates, ME);
+        const result = await claimFirstAvailable(candidates, ME, makeWait());
         expect(result.outcome).toBe('unavailable');
         expect(result.takenIds).toEqual(['o1', 'o2', 'o3']);
         candidates.forEach((candidate) => expect(candidate.start).not.toHaveBeenCalled());
@@ -280,7 +300,7 @@ describe('claimFirstAvailable', () => {
     test('treats a candidate already assigned to this driver as accepted and starts nothing else', async () => {
         const mine = makeOrder('o1', { meta: { report_id: REPORT, child_index: 1 }, driver_assigned: assignedTo(ME) });
         const second = sibling('o2', 2);
-        const result = await claimFirstAvailable([mine, second], ME);
+        const result = await claimFirstAvailable([mine, second], ME, makeWait());
         expect(result.outcome).toBe('accepted');
         expect(result.order).toBe(mine);
         expect(mine.start).not.toHaveBeenCalled();
@@ -297,7 +317,7 @@ describe('claimFirstAvailable', () => {
             reload: (order) => (started ? makeOrder('o1', { driver_assigned: assignedTo(ME) }) : order),
         });
         const second = sibling('o2', 2);
-        const result = await claimFirstAvailable([first, second], ME);
+        const result = await claimFirstAvailable([first, second], ME, makeWait());
         expect(result.outcome).toBe('accepted');
         expect(result.order.id).toBe('o1');
         expect(second.start).not.toHaveBeenCalled();
@@ -310,9 +330,11 @@ describe('claimFirstAvailable', () => {
             },
         });
         const second = sibling('o2', 2);
-        const result = await claimFirstAvailable([first, second], ME);
+        const wait = makeWait();
+        const result = await claimFirstAvailable([first, second], ME, wait);
         expect(result.outcome).toBe('error');
         expect(result.error.message).toBe('Order has not been dispatched');
+        expect(wait).not.toHaveBeenCalled();
         expect(second.reload).not.toHaveBeenCalled();
         expect(second.start).not.toHaveBeenCalled();
     });
@@ -324,7 +346,7 @@ describe('claimFirstAvailable', () => {
             },
         });
         const second = sibling('o2', 2);
-        const result = await claimFirstAvailable([first, second], ME);
+        const result = await claimFirstAvailable([first, second], ME, makeWait());
         expect(result.outcome).toBe('error');
         expect(first.start).not.toHaveBeenCalled();
         expect(second.start).not.toHaveBeenCalled();
@@ -345,13 +367,84 @@ describe('claimFirstAvailable', () => {
             },
         });
         const second = sibling('o2', 2);
-        const result = await claimFirstAvailable([first, second], ME);
+        const result = await claimFirstAvailable([first, second], ME, makeWait());
         expect(result.outcome).toBe('error');
         expect(second.start).not.toHaveBeenCalled();
     });
 
+    test('accepts with the re-read order when the confirmation read shows this driver', async () => {
+        const reread = makeOrder('o1', { driver_assigned: assignedTo(ME) });
+        const first = startedThen('o1', 1, () => reread);
+        const second = sibling('o2', 2);
+        const result = await claimFirstAvailable([first, second], ME, makeWait());
+        expect(result.outcome).toBe('accepted');
+        expect(result.order).toBe(reread);
+        expect(result.takenIds).toEqual([]);
+        expect(second.reload).not.toHaveBeenCalled();
+        expect(second.start).not.toHaveBeenCalled();
+    });
+
+    test('moves to the next candidate when the confirmation read shows another driver', async () => {
+        const first = startedThen('o1', 1, () => makeOrder('o1', { driver_assigned: assignedTo('driver_other') }));
+        const second = sibling('o2', 2);
+        const wait = makeWait();
+        const result = await claimFirstAvailable([first, second], ME, wait);
+        expect(result.outcome).toBe('accepted');
+        expect(result.order).toBe(second);
+        expect(result.takenIds).toEqual(['o1']);
+        expect(first.start).toHaveBeenCalledTimes(1);
+        expect(second.start).toHaveBeenCalledWith({ assign: ME });
+        expect(wait.mock.calls).toEqual([[ACCEPT_CONFIRM_DELAY_MS], [ACCEPT_CONFIRM_DELAY_MS]]);
+    });
+
+    test('reports unavailable with both ids taken when the confirmation read shows another driver and no candidate is left', async () => {
+        const otherDriver = (id) => () => makeOrder(id, { driver_assigned: assignedTo('driver_other') });
+        const first = startedThen('o1', 1, otherDriver('o1'));
+        const second = startedThen('o2', 2, otherDriver('o2'));
+        const result = await claimFirstAvailable([first, second], ME, makeWait());
+        expect(result.outcome).toBe('unavailable');
+        expect(result.order).toBeNull();
+        expect(result.takenIds).toEqual(['o1', 'o2']);
+    });
+
+    test('reports an error when the confirmation read shows the assignment gone', async () => {
+        const first = startedThen('o1', 1, () => makeOrder('o1', { meta: { report_id: REPORT, child_index: 1 } }));
+        const second = sibling('o2', 2);
+        const result = await claimFirstAvailable([first, second], ME, makeWait());
+        expect(result.outcome).toBe('error');
+        expect(result.order).toBeNull();
+        expect(result.error.message).toBe('The accepted order has no driver after the confirmation re-read.');
+        expect(result.takenIds).toEqual([]);
+        expect(second.reload).not.toHaveBeenCalled();
+        expect(second.start).not.toHaveBeenCalled();
+    });
+
+    test('accepts with the started order when the confirmation read fails', async () => {
+        const first = startedThen('o1', 1, () => {
+            throw new Error('Network request failed');
+        });
+        const second = sibling('o2', 2);
+        const result = await claimFirstAvailable([first, second], ME, makeWait());
+        expect(result.outcome).toBe('accepted');
+        expect(result.order).toBe(first);
+        expect(second.reload).not.toHaveBeenCalled();
+        expect(second.start).not.toHaveBeenCalled();
+    });
+
+    test('waits ACCEPT_CONFIRM_DELAY_MS once per successful start, between the start and the confirmation read', async () => {
+        const taken = makeOrder('o1', { meta: { report_id: REPORT, child_index: 1 }, driver_assigned: assignedTo('driver_other') });
+        const free = sibling('o2', 2);
+        const wait = makeWait();
+        const result = await claimFirstAvailable([taken, free], ME, wait);
+        expect(result.outcome).toBe('accepted');
+        expect(wait).toHaveBeenCalledTimes(1);
+        expect(wait).toHaveBeenCalledWith(ACCEPT_CONFIRM_DELAY_MS);
+        expect(free.start.mock.invocationCallOrder[0]).toBeLessThan(wait.mock.invocationCallOrder[0]);
+        expect(free.reload).toHaveBeenCalledTimes(2);
+    });
+
     test('reports unavailable for an empty candidate list', async () => {
-        expect((await claimFirstAvailable([], ME)).outcome).toBe('unavailable');
+        expect((await claimFirstAvailable([], ME, makeWait())).outcome).toBe('unavailable');
     });
 });
 

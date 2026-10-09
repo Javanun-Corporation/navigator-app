@@ -10,6 +10,9 @@ export const FAILED_TITLE = 'Could not accept the order';
 export const FAILED_MESSAGE = 'Check your connection and try again.';
 export const HELD_TITLE = 'Already assigned';
 
+// How long claimFirstAvailable waits after start succeeds before it re-reads the order. Fleetbase can let two drivers start the same free order at once and keep only the later assignment, so the re-read tells the loser. It narrows that race but cannot close it.
+export const ACCEPT_CONFIRM_DELAY_MS = 2000;
+
 // The visible label of the Orders list's switch for finished orders. The e2e harness never taps it; it reads the hidden-count text below.
 export const SHOW_FINISHED_LABEL = 'Show finished orders';
 
@@ -136,15 +139,19 @@ export const assignmentOf = (order, driverId) => {
     return order.getAttribute('driver_assigned.id') === driverId ? 'mine' : 'taken';
 };
 
+const defaultWait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const reloadWithState = async (order, driverId) => {
     const reloaded = await order.reload();
     return { order: reloaded, state: assignmentOf(reloaded, driverId) };
 };
 
 // Claims the first candidate nobody has taken. Each candidate is re-read first, so a taken or released order is skipped without calling start.
-// Outcomes: accepted (order is the started order), unavailable (every candidate was taken) and error (a call failed and the candidate is still free or unknown).
-// It stops at the first error and never moves on to another candidate after one, because start may have succeeded on the server.
-export const claimFirstAvailable = async (candidates, driverId) => {
+// After start succeeds it waits ACCEPT_CONFIRM_DELAY_MS and re-reads the order once more, because Fleetbase can accept two simultaneous starts and keep only the later driver. If the re-read shows another driver the candidate counts as taken and the next one is tried.
+// Outcomes: accepted (order is the started order, or the re-read one), unavailable (every candidate was taken) and error (a call failed and the candidate is still free or unknown, or the accepted order lost its driver).
+// It stops at the first error and never moves on to another candidate after one, because start may have succeeded on the server. A failed confirmation re-read is not an error: start succeeded, so the order is accepted.
+// wait is injectable so tests do not sleep.
+export const claimFirstAvailable = async (candidates, driverId, wait = defaultWait) => {
     const takenIds = [];
     for (const candidate of candidates) {
         let current;
@@ -160,9 +167,9 @@ export const claimFirstAvailable = async (candidates, driverId) => {
             takenIds.push(candidate.id);
             continue;
         }
+        let started;
         try {
-            const started = await current.order.start({ assign: driverId });
-            return { outcome: 'accepted', order: started, takenIds };
+            started = await current.order.start({ assign: driverId });
         } catch (startError) {
             let after = null;
             try {
@@ -179,6 +186,21 @@ export const claimFirstAvailable = async (candidates, driverId) => {
             }
             return { outcome: 'error', order: null, error: startError, takenIds };
         }
+        await wait(ACCEPT_CONFIRM_DELAY_MS);
+        let confirmed;
+        try {
+            confirmed = await reloadWithState(started, driverId);
+        } catch (confirmError) {
+            return { outcome: 'accepted', order: started, takenIds };
+        }
+        if (confirmed.state === 'mine') {
+            return { outcome: 'accepted', order: confirmed.order, takenIds };
+        }
+        if (confirmed.state === 'taken') {
+            takenIds.push(candidate.id);
+            continue;
+        }
+        return { outcome: 'error', order: null, error: new Error('The accepted order has no driver after the confirmation re-read.'), takenIds };
     }
     return { outcome: 'unavailable', order: null, takenIds };
 };
