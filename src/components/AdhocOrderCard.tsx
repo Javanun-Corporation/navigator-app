@@ -10,6 +10,7 @@ import { Place } from '@fleetbase/sdk';
 import { format as formatDate } from 'date-fns';
 import { useLocation } from '../contexts/LocationContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useOrderManager } from '../contexts/OrderManagerContext';
 import useAppTheme from '../hooks/use-app-theme';
 import useFleetbase from '../hooks/use-fleetbase';
 import OrderProgressBar from './OrderProgressBar';
@@ -19,13 +20,17 @@ import MultipleCustomerAvatars from './MultipleCustomerAvatars';
 import LoadingText from './LoadingText';
 import LoadingOverlay from './LoadingOverlay';
 import Badge from './Badge';
+import { FAILED_MESSAGE, FAILED_TITLE, HELD_TITLE, UNAVAILABLE_MESSAGE, UNAVAILABLE_TITLE, claimFirstAvailable, dismissMessage, findHeldSibling, heldMessage } from '../utils/order-groups';
 
 const INFO_FIELD_VALUE_MIN_HEIGHT = 30;
-export const AdhocOrderCard = ({ order, onPress, onAccept, onDismiss }) => {
+export const AdhocOrderCard = ({ order, siblings, onPress, onAccept, onDismiss, onUnavailable }) => {
     const theme = useTheme();
     const { adapter } = useFleetbase();
     const { driver } = useAuth();
     const { location } = useLocation();
+    const { currentOrders, dismissedOrders } = useOrderManager();
+    // The orders this card may claim, the displayed one first (see buildOrderList in utils/order-groups.js)
+    const candidates = useMemo(() => (siblings?.length ? siblings : [order]), [siblings, order]);
     const { isDarkMode } = useAppTheme();
     const [isAccepting, setIsAccepting] = useState(false);
     const [isNavigating, setIsNavigating] = useState(false);
@@ -69,7 +74,13 @@ export const AdhocOrderCard = ({ order, onPress, onAccept, onDismiss }) => {
         return getDistance([location.coords.latitude, location.coords.longitude], destination);
     }, [location, destination]);
 
-    const handleAccept = useCallback(async () => {
+    const handleAccept = useCallback(() => {
+        const held = findHeldSibling(order, currentOrders, dismissedOrders);
+        if (held) {
+            Alert.alert(HELD_TITLE, heldMessage(held));
+            return;
+        }
+
         Alert.alert('Accept Ad-Hoc order?', 'By accepting this ad-hoc order it will become assigned to you and the order will start immediatley.', [
             {
                 text: 'Cancel',
@@ -81,22 +92,30 @@ export const AdhocOrderCard = ({ order, onPress, onAccept, onDismiss }) => {
                     setIsAccepting(true);
 
                     try {
-                        await order.start({ assign: driver.id });
-                        if (typeof onAccept === 'function') {
-                            onAccept(order);
+                        const result = await claimFirstAvailable(candidates, driver.id);
+                        if (result.outcome === 'accepted') {
+                            if (typeof onAccept === 'function') {
+                                onAccept(result.order);
+                            }
+                        } else if (result.outcome === 'unavailable') {
+                            Alert.alert(UNAVAILABLE_TITLE, UNAVAILABLE_MESSAGE);
+                            if (typeof onUnavailable === 'function') {
+                                onUnavailable(order);
+                            }
+                        } else {
+                            console.warn('Error assigning driver to ad-hoc order:', result.error);
+                            Alert.alert(FAILED_TITLE, FAILED_MESSAGE);
                         }
-                    } catch (err) {
-                        console.warn('Error assigning driver to ad-hoc order:', err);
                     } finally {
                         setIsAccepting(false);
                     }
                 },
             },
         ]);
-    }, [order, setIsAccepting]);
+    }, [order, candidates, currentOrders, dismissedOrders, driver, onAccept, onUnavailable]);
 
     const handleDismiss = useCallback(() => {
-        Alert.alert('Dismiss Ad-Hoc order?', 'By dimissing this ad-hoc order it will no longer display as an available order.', [
+        Alert.alert('Dismiss Ad-Hoc order?', dismissMessage(candidates.length - 1), [
             {
                 text: 'Cancel',
                 style: 'cancel',
@@ -110,7 +129,7 @@ export const AdhocOrderCard = ({ order, onPress, onAccept, onDismiss }) => {
                 },
             },
         ]);
-    }, [order]);
+    }, [order, candidates, onDismiss]);
 
     return (
         <Pressable onPress={handlePress}>

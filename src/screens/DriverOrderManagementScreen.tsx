@@ -3,7 +3,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { FlatList, RefreshControl } from 'react-native';
-import { Separator, Text, XStack, YStack, useTheme } from 'tamagui';
+import { Label, Separator, Switch, Text, XStack, YStack, useTheme } from 'tamagui';
 import AdhocOrderCard from '../components/AdhocOrderCard';
 import OrderCard from '../components/OrderCard';
 import PastOrderCard from '../components/PastOrderCard';
@@ -13,7 +13,9 @@ import { useNotification } from '../contexts/NotificationContext';
 import { useOrderManager } from '../contexts/OrderManagerContext';
 import useAppTheme from '../hooks/use-app-theme';
 import useSocketClusterClient from '../hooks/use-socket-cluster-client';
+import useStorage from '../hooks/use-storage';
 import { formatDuration, formatMeters } from '../utils/format';
+import { SHOW_FINISHED_LABEL, buildOrderList, countHiddenFinishedOrders, dismissalKeysFor, hiddenFinishedMessage, listShownHeldOrders } from '../utils/order-groups';
 
 const countStops = (orders = []) =>
     orders.reduce((total, order) => {
@@ -31,40 +33,6 @@ const sumDistance = (orders = []) =>
     orders.reduce((total, order) => {
         return total + order.getAttribute('distance');
     }, 0);
-
-// Helper function to filter out duplicate beesure validations, prioritizing accepted orders
-// TODO: also need to filter out duplicate beesure validations that were dismissed (ex. dismissing one of the duplicates should dismiss all of them)
-const filterUniqueValidations = (orders) => {
-    const orderMap = new Map();
-
-    orders.forEach((order) => {
-        const validationId = order.getAttribute('meta.validation_id') || order.getAttribute('custom_fields.validation_id');
-
-        // If it's a standard order without a validation ID, use its own ID as the key so it never gets filtered
-        const key = validationId ? `val_${validationId}` : `ord_${order.id}`;
-
-        if (!orderMap.has(key)) {
-            // First time seeing this validation ID, add it to the map
-            orderMap.set(key, order);
-        } else {
-            // A duplicate exists, must prioritize the one the driver actually accepted.
-            const existingOrder = orderMap.get(key);
-
-            // Check if the orders are assigned to a driver
-            const isExistingAssigned = existingOrder.getAttribute('driver_assigned') !== null;
-            const isNewAssigned = order.getAttribute('driver_assigned') !== null;
-
-            // If the new order in the loop is assigned (e.g., 'started'), but the
-            // one we already saved is just unassigned/adhoc, OVERWRITE it.
-            if (!isExistingAssigned && isNewAssigned) {
-                orderMap.set(key, order);
-            }
-        }
-    });
-
-    // Convert the map values back into a flat array for the FlatList
-    return Array.from(orderMap.values());
-};
 
 const REFRESH_NEARBY_ORDERS_MS = 6000 * 5; // 5 mins
 const REFRESH_ORDERS_MS = 6000 * 15; // 15 mins
@@ -94,15 +62,15 @@ const DriverOrderManagementScreen = () => {
     const distance = sumDistance(activeCurrentOrders);
     const duration = sumDuration(activeCurrentOrders);
 
-    // Memoized filtered array so we only calculate when orders change
-    const displayOrders = useMemo(() => {
-        const visibleNearby = nearbyOrders.filter((order) => !dismissedOrders.includes(order.id));
-        const visibleCurrent = currentOrders.filter((order) => !dismissedOrders.includes(order.id));
+    // Finished orders are hidden unless the driver turns them on. The choice is kept per driver across app restarts (see FINISHED_ORDER_STATUSES in utils/order-groups.js)
+    const [showFinishedOrders, setShowFinishedOrders] = useStorage(`${driver?.id}_show_finished_orders`, false);
 
-        const combinedOrders = [...visibleNearby, ...visibleCurrent];
+    // The unassigned nearby orders collapse to one item per report; every order assigned to the driver stays its own item (see utils/order-groups.js)
+    const displayItems = useMemo(() => buildOrderList(nearbyOrders, currentOrders, dismissedOrders, showFinishedOrders), [nearbyOrders, currentOrders, dismissedOrders, showFinishedOrders]);
 
-        return filterUniqueValidations(combinedOrders);
-    }, [nearbyOrders, currentOrders, dismissedOrders]);
+    // What the header counts: the assigned orders the list shows, and how many finished ones it leaves out
+    const shownOrderCount = useMemo(() => listShownHeldOrders(currentOrders, dismissedOrders, showFinishedOrders).length, [currentOrders, dismissedOrders, showFinishedOrders]);
+    const hiddenFinishedCount = useMemo(() => countHiddenFinishedOrders(currentOrders, dismissedOrders, showFinishedOrders), [currentOrders, dismissedOrders, showFinishedOrders]);
 
     useEffect(() => {
         const handlePushNotification = async (notification, action) => {
@@ -175,7 +143,8 @@ const DriverOrderManagementScreen = () => {
 
     const handleAdhocDismissal = useCallback(
         (order) => {
-            setDimissedOrders((prevDismissedOrders) => [...prevDismissedOrders, order.id]);
+            const keys = dismissalKeysFor(order);
+            setDimissedOrders((prevDismissedOrders) => [...new Set([...prevDismissedOrders, ...keys])]);
         },
         [setDimissedOrders]
     );
@@ -185,16 +154,23 @@ const DriverOrderManagementScreen = () => {
         reloadCurrentOrders();
     }, [reloadNearbyOrders, reloadCurrentOrders]);
 
-    const renderOrder = ({ item: order }) => {
+    const handleAdhocUnavailable = useCallback(() => {
+        reloadNearbyOrders();
+    }, [reloadNearbyOrders]);
+
+    const renderOrder = ({ item }) => {
+        const { order, siblings } = item;
         const isAdhocOrder = order.getAttribute('adhoc') === true && order.getAttribute('driver_assigned') === null;
         if (isAdhocOrder) {
             return (
                 <YStack px='$2' py='$4'>
                     <AdhocOrderCard
                         order={order}
+                        siblings={siblings}
                         onPress={() => navigation.navigate('OrderModal', { order: order.serialize() })}
                         onDismiss={handleAdhocDismissal}
                         onAccept={handleAdhocAccept}
+                        onUnavailable={handleAdhocUnavailable}
                     />
                 </YStack>
             );
@@ -263,7 +239,7 @@ const DriverOrderManagementScreen = () => {
                 </Text>
                 <XStack space='$2' alignItems='center'>
                     <Text color='$textSecondary' fontSize='$5'>
-                        {currentOrders.length} {currentOrders.length > 1 ? 'orders' : 'order'}
+                        {shownOrderCount} {shownOrderCount > 1 ? 'orders' : 'order'}
                     </Text>
                     <Text color='$textSecondary' fontSize='$5'>
                         •
@@ -284,11 +260,30 @@ const DriverOrderManagementScreen = () => {
                         {formatMeters(distance)}
                     </Text>
                 </XStack>
+                <XStack space='$2' alignItems='center' flexWrap='wrap' mt='$2'>
+                    <Switch
+                        id='showFinishedOrders'
+                        checked={showFinishedOrders}
+                        onCheckedChange={(checked) => setShowFinishedOrders(checked)}
+                        bg={showFinishedOrders ? '$green-600' : '$gray-500'}
+                        borderWidth={1}
+                        borderColor={isDarkMode ? '$gray-700' : '$white'}
+                    >
+                        <Switch.Thumb animation='quick' bg={isDarkMode ? '$gray-200' : '$white'} borderColor={isDarkMode ? '$gray-700' : '$gray-500'} borderWidth={1} />
+                    </Switch>
+                    <Label htmlFor='showFinishedOrders' color='$textSecondary' size='$2' lineHeight='$4'>
+                        {SHOW_FINISHED_LABEL}
+                    </Label>
+                    {hiddenFinishedCount > 0 && (
+                        <Text color='$textSecondary' fontSize='$4'>
+                            {hiddenFinishedMessage(hiddenFinishedCount)}
+                        </Text>
+                    )}
+                </XStack>
             </YStack>
             <FlatList
-                // uses the filtered array instead of the raw data
-                data={displayOrders}
-                keyExtractor={(order, index) => order.id.toString() + '_' + index}
+                data={displayItems}
+                keyExtractor={(item) => item.key}
                 renderItem={renderOrder}
                 refreshControl={<RefreshControl refreshing={isFetchingCurrentOrders} onRefresh={reloadCurrentOrders} tintColor={theme['$blue-500'].val} />}
                 showsVerticalScrollIndicator={false}
