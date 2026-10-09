@@ -28,6 +28,7 @@ const makeOrder = (id, attributes = {}, server = {}) => {
 const sibling = (id, childIndex, extra = {}) => makeOrder(id, { meta: { report_id: REPORT, child_index: childIndex }, ...extra });
 const assignedTo = (driverId) => ({ id: driverId });
 const ids = (orders) => orders.map((order) => order.id);
+
 // claimFirstAvailable waits ACCEPT_CONFIRM_DELAY_MS after every successful start, so each test injects a wait that returns at once.
 const makeWait = () => jest.fn(async () => {});
 
@@ -440,6 +441,7 @@ describe('claimFirstAvailable', () => {
         expect(wait).toHaveBeenCalledTimes(1);
         expect(wait).toHaveBeenCalledWith(ACCEPT_CONFIRM_DELAY_MS);
         expect(free.start.mock.invocationCallOrder[0]).toBeLessThan(wait.mock.invocationCallOrder[0]);
+        expect(wait.mock.invocationCallOrder[0]).toBeLessThan(free.reload.mock.invocationCallOrder[1]);
         expect(free.reload).toHaveBeenCalledTimes(2);
     });
 
