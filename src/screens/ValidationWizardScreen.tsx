@@ -169,7 +169,11 @@ const ValidationWizardScreen = ({ route }) => {
 
             // 1. Presigned PUT URLs, one per role, keys derived by BeeSure.
             const presignRes = await fetch(PRESIGN_API_URL, { method: 'POST', headers: authHeaders, body: JSON.stringify({ roles: ['lva_face', 'lva_id'] }) });
-            if (!presignRes.ok) throw new Error(`Failed to fetch pre-signed URLs (${presignRes.status}).`);
+            if (!presignRes.ok) {
+                // Surface the server's reply: a 400 here named the wrong handler when the two API URLs were swapped.
+                const text = await presignRes.text().catch(() => '');
+                throw new Error(`Failed to fetch pre-signed URLs (${presignRes.status})${text ? `: ${text}` : '.'}`);
+            }
             const { presignedData } = await presignRes.json();
             const byRole = Object.fromEntries(presignedData.map((p) => [p.role, p]));
             if (!byRole.lva_face || !byRole.lva_id) throw new Error('Pre-sign response was incomplete.');
@@ -178,7 +182,10 @@ const ValidationWizardScreen = ({ route }) => {
             for (const [role, localUri] of [['lva_face', facePhoto], ['lva_id', idPhoto]]) {
                 const blob = await (await fetch(localUri)).blob();
                 const s3Res = await fetch(byRole[role].uploadUrl, { method: 'PUT', body: blob, headers: { 'Content-Type': 'image/jpeg' } });
-                if (!s3Res.ok) throw new Error(`S3 upload failed for ${role} (${s3Res.status}).`);
+                if (!s3Res.ok) {
+                    const text = await s3Res.text().catch(() => '');
+                    throw new Error(`S3 upload failed for ${role} (${s3Res.status})${text ? `: ${text}` : '.'}`);
+                }
             }
 
             // 3. Report to BeeSure. reportId/validationId come from the token server-side.
