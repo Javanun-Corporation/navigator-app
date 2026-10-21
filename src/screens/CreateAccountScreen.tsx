@@ -12,6 +12,7 @@ import PhoneInput from '../components/PhoneInput';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfig } from '../contexts/ConfigContext';
 import { isValidPhoneNumber } from '../utils';
+import { storage } from '../hooks/use-storage';
 
 const CreateAccountScreen = ({ route }) => {
     const { resolveConnectionConfig } = useConfig();
@@ -24,6 +25,19 @@ const CreateAccountScreen = ({ route }) => {
     const [name, setName] = useState(params.name || '');
     const [email, setEmail] = useState(''); // Added email state
     const [phone, setPhone] = useState(phoneState);
+    const [referralCode, setReferralCode] = useState('');
+
+    // Stash the referral code locally as the user types it so it survives past
+    // this screen regardless of which navigation path account creation takes;
+    // AuthContext redeems it once the new driver's session is created.
+    const handleReferralCodeChange = (text) => {
+        setReferralCode(text);
+        if (text) {
+            storage.setString('pending_referral_code', text.trim().toUpperCase());
+        } else {
+            storage.removeItem('pending_referral_code');
+        }
+    };
 
     const handleSendVerificationCode = async () => {
         if (isSendingCode) {
@@ -89,6 +103,7 @@ const CreateAccountScreen = ({ route }) => {
                         {/* Added Email Input */}
                         <Input value={email} onChangeText={(text) => setEmail(text)} placeholder='Enter your email address' autoCapitalize='none' keyboardType='email-address' />
                         <PhoneInput value={phone} onChange={(phoneNumber) => setPhone(phoneNumber)} />
+                        <Input value={referralCode} onChangeText={handleReferralCodeChange} placeholder='Referral code (optional)' autoCapitalize='characters' />
                     </YStack>
                     <Button size='$5' mt='$2' onPress={handleSendVerificationCode} bg='$primary' width='100%' opacity={isSendingCode ? 0.75 : 1} disabled={isSendingCode} rounded>
                         <Button.Icon>{isSendingCode ? <Spinner color='$white' /> : <FontAwesomeIcon icon={faPaperPlane} color={theme.white.val} />}</Button.Icon>
