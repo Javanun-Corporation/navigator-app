@@ -165,6 +165,7 @@ const ValidationWizardScreen = ({ route }) => {
             const orderToken = meta.beesure_token;
 
             if (!orderToken) {
+                console.warn('Missing beesure_token. order.id:', order.id, 'meta keys:', Object.keys(meta), 'meta:', JSON.stringify(meta));
                 throw new Error('Critical Error: This order is missing its BeeSure order token.');
             }
 
