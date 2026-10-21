@@ -10990,6 +10990,11 @@ react-native-device-info@^14.0.4:
   resolved "https://registry.npmjs.org/react-native-device-info/-/react-native-device-info-14.1.1.tgz"
   integrity sha512-lXFpe6DJmzbQXNLWxlMHP2xuTU5gwrKAvI8dCAZuERhW9eOXSubOQIesk9lIBnsi9pI19GMrcpJEvs4ARPRYmw==
 
+react-native-document-scanner-plugin@2.0.4:
+  version "2.0.4"
+  resolved "https://registry.yarnpkg.com/react-native-document-scanner-plugin/-/react-native-document-scanner-plugin-2.0.4.tgz#a2d0f4c481a2b0b51a0070876216bee081ab0ee9"
+  integrity sha512-Y+tEP8qqgIseYw2T9NisT7+vaXJCM1QMj6KUqplNBQ3C+XivDwtyzp2vg03kH6Bjhg+ZxHzuEyu96ltBOax0iw==
+
 react-native-event-listeners@^1.0.7:
   version "1.0.7"
   resolved "https://registry.npmjs.org/react-native-event-listeners/-/react-native-event-listeners-1.0.7.tgz"
@@ -11198,6 +11203,11 @@ react-native-vector-icons@^10.3.0:
     prop-types "^15.7.2"
     yargs "^16.1.1"
 
+react-native-vision-camera-face-detector@1.9.1:
+  version "1.9.1"
+  resolved "https://registry.yarnpkg.com/react-native-vision-camera-face-detector/-/react-native-vision-camera-face-detector-1.9.1.tgz#0429e84a24b145fdabdd88be364e223b30e440eb"
+  integrity sha512-OsTe61R1+CyzZLp3xLI3PBMBGd3zEWbeHPgqZPOSbB0gEKWyIaTahBUCft47pVdi72onDlke//hPM+xyFOYBjQ==
+
 react-native-vision-camera@^4.6.4:
   version "4.7.3"
   resolved "https://registry.npmjs.org/react-native-vision-camera/-/react-native-vision-camera-4.7.3.tgz"
@@ -11238,6 +11248,13 @@ react-native-webview@^13.12.3:
   dependencies:
     escape-string-regexp "^4.0.0"
     invariant "2.2.4"
+
+react-native-worklets-core@1.6.2:
+  version "1.6.2"
+  resolved "https://registry.yarnpkg.com/react-native-worklets-core/-/react-native-worklets-core-1.6.2.tgz#5270097812b5f6668ca818dfa0a60078d74b9352"
+  integrity sha512-zw73JfL40ZL/OD2TOil1El4D9ZwS3l6AFPeFfUWXh+V2/dHN8i28jHX8QXlz5DYtAkR+Ju3U1h4yiaODi/igZw==
+  dependencies:
+    string-hash-64 "^1.0.3"
 
 react-native@0.77.0-rc.6:
   version "0.77.0-rc.6"
@@ -12169,6 +12186,11 @@ strict-uri-encode@^2.0.0:
   version "2.0.0"
   resolved "https://registry.npmjs.org/strict-uri-encode/-/strict-uri-encode-2.0.0.tgz"
   integrity sha512-QwiXZgpRcKkhTj2Scnn++4PKtWsH0kpzZ62L2R6c/LUVYv7hVnZqcg2+sMuT6R7Jusu1vviK/MFsu6kNJfWlEQ==
+
+string-hash-64@^1.0.3:
+  version "1.0.3"
+  resolved "https://registry.yarnpkg.com/string-hash-64/-/string-hash-64-1.0.3.tgz#0deb56df58678640db5c479ccbbb597aaa0de322"
+  integrity sha512-D5OKWKvDhyVWWn2x5Y9b+37NUllks34q1dCDhk/vYcso9fmhs+Tl3KR/gE4v5UNj2UA35cnX4KdVVGkG1deKqw==
 
 string-length@^4.0.1:
   version "4.0.2"

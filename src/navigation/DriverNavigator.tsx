@@ -36,11 +36,13 @@ import ChatParticipantsScreen from '../screens/ChatParticipantsScreen';
 import CreateChatChannelScreen from '../screens/CreateChatChannelScreen';
 import CreateFuelReportScreen from '../screens/CreateFuelReportScreen';
 import CreateIssueScreen from '../screens/CreateIssueScreen';
+import DevMenuScreen from '../screens/DevMenuScreen';
 import DriverAccountScreen from '../screens/DriverAccountScreen';
 import DriverDashboardScreen from '../screens/DriverDashboardScreen';
 import DriverOrderManagementScreen from '../screens/DriverOrderManagementScreen';
 import DriverProfileScreen from '../screens/DriverProfileScreen';
 import DriverReportScreen from '../screens/DriverReportScreen';
+import EarningsScreen from '../screens/EarningsScreen';
 import EditFuelReportScreen from '../screens/EditFuelReportScreen';
 import EditIssueScreen from '../screens/EditIssueScreen';
 import EntityScreen from '../screens/EntityScreen';
@@ -48,6 +50,9 @@ import FuelReportScreen from '../screens/FuelReportScreen';
 import IssueScreen from '../screens/IssueScreen';
 import OrderScreen from '../screens/OrderScreen';
 import PastOrdersScreen from '../screens/PastOrdersScreen';
+import PaymentsScreen from '../screens/PaymentsScreen';
+import PayoutOnboardingScreen from '../screens/PayoutOnboardingScreen';
+import ReferralScreen from '../screens/ReferralScreen';
 import ProofOfDeliveryScreen from '../screens/ProofOfDeliveryScreen';
 import TrainingModuleScreen from '../screens/TrainingModuleScreen';
 import TrainingQuizScreen from '../screens/TrainingQuizScreen';
@@ -521,6 +526,36 @@ const DriverAccountTab = createNativeStackNavigator({
         },
         PastOrders: {
             screen: PastOrdersScreen,
+            options: {
+                headerShown: false,
+            },
+        },
+        Earnings: {
+            screen: EarningsScreen,
+            options: {
+                headerShown: false,
+            },
+        },
+        Payments: {
+            screen: PaymentsScreen,
+            options: {
+                headerShown: false,
+            },
+        },
+        PayoutOnboarding: {
+            screen: PayoutOnboardingScreen,
+            options: {
+                headerShown: false,
+            },
+        },
+        Referral: {
+            screen: ReferralScreen,
+            options: {
+                headerShown: false,
+            },
+        },
+        DevMenu: {
+            screen: DevMenuScreen,
             options: {
                 headerShown: false,
             },

@@ -275,6 +275,25 @@ const DriverAccountScreen = () => {
             rightComponent: null,
             onPress: () => navigation.navigate('PastOrders'),
         },
+        {
+            title: 'Payments',
+            rightComponent: null,
+            onPress: () => navigation.navigate('Payments'),
+        },
+        {
+            title: 'Refer a Friend',
+            rightComponent: null,
+            onPress: () => navigation.navigate('Referral'),
+        },
+        ...(__DEV__
+            ? [
+                  {
+                      title: 'Dev Menu',
+                      rightComponent: null,
+                      onPress: () => navigation.navigate('DevMenu'),
+                  },
+              ]
+            : []),
     ];
 
     // Data Protection menu items

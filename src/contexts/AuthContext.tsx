@@ -6,6 +6,7 @@ import { LoginManager as FacebookLoginManager } from 'react-native-fbsdk-next';
 import useFleetbase from '../hooks/use-fleetbase';
 import useStorage, { storage } from '../hooks/use-storage';
 import { later, navigatorConfig } from '../utils';
+import { redeemReferral } from '../utils/payoutsApi';
 import { useLanguage } from './LanguageContext';
 import { useNotification } from './NotificationContext';
 
@@ -221,8 +222,10 @@ export const AuthProvider = ({ children }) => {
             dispatch({ type: 'VERIFY', isVerifyingCode: true });
             try {
                 const driver = await fleetbase.drivers.create(phone, code, attributes);
-                createDriverSession(driver);
+                const instance = await createDriverSession(driver);
                 dispatch({ type: 'VERIFY', driver });
+                redeemPendingReferralCode(instance);
+                return instance;
             } catch (error) {
                 console.warn('[AuthContext] Account creation verification failed:', error);
                 throw error;
@@ -232,6 +235,22 @@ export const AuthProvider = ({ children }) => {
         },
         [fleetbase]
     );
+
+    // Best-effort: redeem a referral code captured at signup, if any was stashed
+    // locally. Never blocks or fails account creation — a failure here (bad code,
+    // already redeemed, network error) is silently swallowed.
+    const redeemPendingReferralCode = async (driverInstance) => {
+        const referralCode = storage.getString('pending_referral_code');
+        if (!referralCode) return;
+
+        storage.removeItem('pending_referral_code');
+
+        try {
+            await redeemReferral({ driver: driverInstance, authToken: driverInstance.token, referralCode });
+        } catch (err) {
+            console.warn('[AuthContext] Failed to redeem referral code:', err);
+        }
+    };
 
     // Login: Send verification code
     const login = useCallback(
