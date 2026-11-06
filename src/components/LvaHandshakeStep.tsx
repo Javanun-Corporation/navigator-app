@@ -281,7 +281,7 @@ export default function LvaHandshakeStep({ orderToken, driverId, onDone, onLeave
             <YStack flex={1} padding='$4'>
                 {header}
                 {phase === 'blocked' && (
-                    <Text fontSize={16} color='$error'>
+                    <Text fontSize={16} color='$errorBorder'>
                         {blockedMessage}
                     </Text>
                 )}
@@ -295,7 +295,7 @@ export default function LvaHandshakeStep({ orderToken, driverId, onDone, onLeave
                 )}
                 {phase === 'failed' && (
                     <YStack gap='$3'>
-                        <Text fontSize={16} color='$error'>
+                        <Text fontSize={16} color='$errorBorder'>
                             {error}
                         </Text>
                         <Button size='$5' backgroundColor='$gray5' onPress={() => setRetry((count) => count + 1)}>
@@ -384,7 +384,7 @@ export default function LvaHandshakeStep({ orderToken, driverId, onDone, onLeave
                         </Text>
                     )}
                     {error && (
-                        <Text fontSize={15} color='$error'>
+                        <Text fontSize={15} color='$errorBorder'>
                             {error}
                         </Text>
                     )}
