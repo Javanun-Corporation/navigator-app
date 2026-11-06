@@ -1,5 +1,5 @@
 //validationwizardscreen.tsx
-import { Order, Place } from '@fleetbase/sdk';
+import { Order } from '@fleetbase/sdk';
 import { useNavigation } from '@react-navigation/native';
 import React, { useEffect, useState } from 'react';
 import { Alert, ScrollView, TextInput } from 'react-native';
@@ -8,8 +8,7 @@ import { Button, Spinner, Text, XStack, YStack, useTheme } from 'tamagui';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { faCheck, faChevronLeft, faChevronRight, faClipboardCheck, faNoteSticky, faXmark } from '@fortawesome/free-solid-svg-icons';
 import AutomatedCaptureFlow from '../components/AutomatedCaptureFlow';
-import LoadingOverlay from '../components/LoadingOverlay';
-import QrCodeScanner from '../components/QrCodeScanner';
+import LvaHandshakeStep from '../components/LvaHandshakeStep';
 import ScoreInfoButton from '../components/ScoreInfoButton';
 import ScoreWidgetDevToggle from '../components/ScoreWidgetDevToggle';
 import { ScoreInputWidget } from '../components/score-inputs';
@@ -18,6 +17,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useTempStore } from '../contexts/TempStoreContext';
 import useFleetbase from '../hooks/use-fleetbase';
 import useStorage from '../hooks/use-storage';
+import { readOrderToken, serverErrorMessage } from '../utils/beesure-handshake';
 import { toast } from '../utils/toast';
 
 import Config from 'react-native-config';
@@ -61,9 +61,7 @@ const ValidationWizardScreen = ({ route }) => {
     const subjectExists = store.subjectExists ?? true;
 
     // Wizard States
-    const [step, setStep] = useState(0); // 0 = QR Handshake, 1 = Photos, 2 = Scores, 3 = Notes
-    const [isLoading, setIsLoading] = useState(false); // Used for UI loading overlays
-    const [isScanning, setIsScanning] = useState(true); // Prevents rapid-fire scans
+    const [step, setStep] = useState(0); // 0 = BeeSure handshake, 1 = Photos, 2 = Scores, 3 = Notes
     const [isSubmitting, setIsSubmitting] = useState(false); // Used for final submission
 
     // Clear tempstore if the user navigates to a different order
@@ -79,65 +77,6 @@ const ValidationWizardScreen = ({ route }) => {
             setValue('validationOrderId', orderData.id);
         }
     }, [orderData.id]);
-
-    // Handle QR Code Scan - SERVER SIDE VALIDATION
-    // Fires automatically the instant the scanner reads a valid code - there is no
-    // manual "confirm" step, the handshake kicks off immediately.
-    const handleQrCodeScan = async (data) => {
-        if (!isScanning) return;
-        setIsScanning(false);
-
-        const scannedValue = data?.value || data?.data || data;
-        console.log('📸 SCANNER FIRED! Scanned:', scannedValue);
-
-        let subject;
-
-        try {
-            // Ultra-Safe Subject Resolution
-            const waypointData = route.params?.waypoint || activity?.waypoint;
-            const entity = route.params?.entity;
-
-            const isWaypointActivity = waypointData && typeof waypointData.tracking === 'string' && waypointData.tracking.trim() !== '';
-
-            if (isWaypointActivity) {
-                subject = new Place(waypointData, adapter);
-            } else if (entity) {
-                subject = entity;
-            } else {
-                subject = order;
-            }
-        } catch (err) {
-            console.log('❌ FATAL EXTRACTION CRASH:', err);
-            setIsScanning(true);
-            return;
-        }
-
-        // Hit Fleetbase API to validate the QR code immediately
-        setIsLoading(true); // Turn on the verifying overlay
-        try {
-            console.log(`Sending Handshake to Fleetbase API...`);
-            const proof = await order.captureQrCode(subject, {
-                code: scannedValue,
-                waypoint: activity?.waypoint_uuid || route.params?.waypoint?.id,
-            });
-
-            if (proof && proof.id) {
-                console.log('✅ SUCCESS: Handshake accepted, Proof ID:', proof.id);
-                toast.success('Handshake verified!');
-
-                // Save the Proof ID to your temp store so we can attach it at the end
-                setValue('fleetbaseProofId', proof.id);
-                setStep(1); // Move to photos - automatically, no manual confirmation
-            } else {
-                throw new Error('No proof returned.');
-            }
-        } catch (error) {
-            console.log('❌ HANDSHAKE REJECTED:', error);
-            Alert.alert('Invalid Handshake', 'Fleetbase rejected this QR code. Are you sure this is the right item?', [{ text: 'Try Again', onPress: () => setIsScanning(true) }]);
-        } finally {
-            setIsLoading(false);
-        }
-    };
 
     // Called once the automated face + ID document capture sequence completes (after the
     // user has had a chance to review/retake each photo). Advances straight to the scores step.
@@ -156,16 +95,11 @@ const ValidationWizardScreen = ({ route }) => {
         setIsSubmitting(true);
 
         try {
-            // The BeeSure order token is minted once at order-dispatch time and stored in the
-            // Fleetbase order's own meta (FleetbaseOrderDispatcher sets meta.beesure_token when
-            // the order is created). It's the credential the presign/validation-complete
-            // endpoints require via the X-BeeSure-Order-Token header - it has nothing to do with
-            // the QR code scanned in step 0, which is a separate Fleetbase proof-of-delivery check.
-            const meta = order.meta || (order.attributes && order.attributes.meta) || {};
-            const orderToken = meta.beesure_token;
+            // The token is the order's credential for the presign, the submit, and HandshakeHandler, minted at dispatch and kept in meta.beesure_token.
+            const orderToken = readOrderToken(order);
 
             if (!orderToken) {
-                console.warn('Missing beesure_token. order.id:', order.id, 'meta keys:', Object.keys(meta), 'meta:', JSON.stringify(meta));
+                console.warn('Missing beesure_token. order.id:', order.id, 'meta keys:', Object.keys(order.meta || (order.attributes && order.attributes.meta) || {}));
                 throw new Error('Critical Error: This order is missing its BeeSure order token.');
             }
 
@@ -186,6 +120,8 @@ const ValidationWizardScreen = ({ route }) => {
             if (!presignRes.ok) {
                 const bodyText = await presignRes.text().catch(() => '');
                 console.warn('Presign request failed:', presignRes.status, bodyText);
+                const serverMessage = serverErrorMessage(bodyText);
+                if (serverMessage) throw new Error(serverMessage);
                 throw new Error(`Failed to fetch pre-signed URLs (HTTP ${presignRes.status}).`);
             }
             const { presignedData } = await presignRes.json();
@@ -239,19 +175,13 @@ const ValidationWizardScreen = ({ route }) => {
             if (!reportRes.ok) {
                 const bodyText = await reportRes.text().catch(() => '');
                 console.warn('Validation report request failed:', reportRes.status, bodyText);
+                const serverMessage = serverErrorMessage(bodyText);
+                if (serverMessage) throw new Error(serverMessage);
                 throw new Error(`Failed to save the validation report to BeeSure (HTTP ${reportRes.status}).`);
             }
 
-            // 4. Close the Fleetbase activity with only the proof - no report data (notes, scores,
-            // attachment keys) reaches Fleetbase. That data lives in BeeSure's own backend only.
-            await order.updateActivity({
-                activity: {
-                    ...activity,
-                    status: 'completed',
-                    code: 'completed',
-                },
-                proof: store.fleetbaseProofId, // Retrieve from temp store
-            });
+            // 4. Close the Fleetbase activity with no report data and no proof, because BeeSure's handshake is the meeting's proof (HS11).
+            await order.updateActivity({ activity: { ...activity, status: 'completed', code: 'completed' } });
 
             toast.success('Validation Submitted Successfully!');
 
@@ -263,7 +193,6 @@ const ValidationWizardScreen = ({ route }) => {
             setValue('likenessScore', null);
             setValue('vibeCheckScore', null);
             setValue('subjectExists', true);
-            setValue('fleetbaseProofId', null);
             setValue('validationOrderId', null);
 
             navigation.goBack();
@@ -277,32 +206,8 @@ const ValidationWizardScreen = ({ route }) => {
 
     return (
         <YStack flex={1} bg='$background' safeArea>
-            <LoadingOverlay visible={isLoading} text='Verifying Handshake...' />
-
-            {/* --- STEP 0: QR HANDSHAKE --- */}
-            {step === 0 && (
-                <YStack flex={1} padding='$4'>
-                    <YStack mb='$4'>
-                        <Text fontSize={24} fontWeight='bold'>
-                            QR Handshake
-                        </Text>
-                        <Text fontSize={16} color='$textPrimary' mt='$2'>
-                            Scan the customer's QR code to verify the order and begin validation.
-                        </Text>
-                    </YStack>
-
-                    <YStack flex={1} overflow='hidden' borderRadius='$4'>
-                        {isScanning && <QrCodeScanner onScan={handleQrCodeScan} />}
-                    </YStack>
-
-                    {/* DEV BYPASS: Remove before pushing to production */}
-                    {__DEV__ && (
-                        <Button mt='$4' bg='$warning' onPress={() => setStep(1)}>
-                            [DEV] Skip Handshake
-                        </Button>
-                    )}
-                </YStack>
-            )}
+            {/* --- STEP 0: BEESURE HANDSHAKE --- */}
+            {step === 0 && <LvaHandshakeStep orderToken={readOrderToken(order)} driverId={driver?.id ?? null} onDone={() => setStep(1)} onLeave={() => navigation.goBack()} />}
 
             {/* --- STEP 1: AUTOMATED FACE + ID CAPTURE --- */}
             {/* Full-bleed (no padding/heading) so the camera gets the entire screen - the step
