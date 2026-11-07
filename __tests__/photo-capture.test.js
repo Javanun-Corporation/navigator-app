@@ -16,6 +16,7 @@ import {
     retakeAlert,
     shrinkPhoto,
 } from '../src/utils/photo-capture';
+import { DEFAULT_PHOTO_MAX_ATTEMPTS as HANDSHAKE_DEFAULT_PHOTO_MAX_ATTEMPTS } from '../src/utils/beesure-handshake';
 
 jest.mock('react-native', () => ({ Image: { getSize: jest.fn() } }));
 jest.mock('@bam.tech/react-native-image-resizer', () => ({ __esModule: true, default: { createResizedImage: jest.fn() } }));
@@ -36,6 +37,10 @@ describe('constants', () => {
         expect(ID1_RATIO_TOLERANCE).toBe(0.12);
         expect(ID_FRONT_MIN_FACE_SIZE).toBe(0.05);
         expect(DEFAULT_PHOTO_MAX_ATTEMPTS).toBe(3);
+    });
+
+    test('the default limit matches the one of the handshake rules', () => {
+        expect(HANDSHAKE_DEFAULT_PHOTO_MAX_ATTEMPTS).toBe(DEFAULT_PHOTO_MAX_ATTEMPTS);
     });
 });
 

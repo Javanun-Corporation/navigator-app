@@ -1,6 +1,6 @@
 import { Buffer } from 'buffer';
 import crypto from 'crypto';
-import { CODE_PATTERN, decodeBase64Url, formatCode, handshakeOutcome, handshakeUrl, isBeeSureQr, mergeHandshakeState, normaliseHandshakeInput, readOrderToken, serverErrorMessage, validationIdFromOrderToken } from '../src/utils/beesure-handshake';
+import { CODE_PATTERN, DEFAULT_PHOTO_MAX_ATTEMPTS, decodeBase64Url, formatCode, handshakeOutcome, handshakeUrl, isBeeSureQr, mergeHandshakeState, normaliseHandshakeInput, photoMaxAttemptsFrom, readOrderToken, serverErrorMessage, validationIdFromOrderToken } from '../src/utils/beesure-handshake';
 
 const ID = '8f14e45f-ceea-467a-9af6-1c0c3d0a1b11';
 
@@ -231,5 +231,29 @@ describe('mergeHandshakeState', () => {
     test('a null previous gives next', () => {
         const next = { lvaScanned: false, userScanned: false, met: false };
         expect(mergeHandshakeState(null, next)).toBe(next);
+    });
+});
+
+describe('photoMaxAttemptsFrom', () => {
+    test('the default is 3', () => {
+        expect(DEFAULT_PHOTO_MAX_ATTEMPTS).toBe(3);
+    });
+
+    test('gives 3 for a missing field, a string, 0, -2, 1.5, 1000, null and a null body', () => {
+        expect(photoMaxAttemptsFrom({})).toBe(3);
+        expect(photoMaxAttemptsFrom({ photoMaxAttempts: '3' })).toBe(3);
+        expect(photoMaxAttemptsFrom({ photoMaxAttempts: 0 })).toBe(3);
+        expect(photoMaxAttemptsFrom({ photoMaxAttempts: -2 })).toBe(3);
+        expect(photoMaxAttemptsFrom({ photoMaxAttempts: 1.5 })).toBe(3);
+        expect(photoMaxAttemptsFrom({ photoMaxAttempts: 1000 })).toBe(3);
+        expect(photoMaxAttemptsFrom({ photoMaxAttempts: null })).toBe(3);
+        expect(photoMaxAttemptsFrom(null)).toBe(3);
+    });
+
+    test('gives the value for 1, 5, 999 and -1', () => {
+        expect(photoMaxAttemptsFrom({ photoMaxAttempts: 1 })).toBe(1);
+        expect(photoMaxAttemptsFrom({ photoMaxAttempts: 5 })).toBe(5);
+        expect(photoMaxAttemptsFrom({ photoMaxAttempts: 999 })).toBe(999);
+        expect(photoMaxAttemptsFrom({ photoMaxAttempts: -1 })).toBe(-1);
     });
 });

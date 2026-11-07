@@ -6,7 +6,7 @@ import Config from 'react-native-config';
 import LoadingOverlay from './LoadingOverlay';
 import QrCodeScanner from './QrCodeScanner';
 import { toast } from '../utils/toast';
-import { formatCode, handshakeOutcome, handshakeUrl, isBeeSureQr, mergeHandshakeState, normaliseHandshakeInput, validationIdFromOrderToken } from '../utils/beesure-handshake';
+import { DEFAULT_PHOTO_MAX_ATTEMPTS, formatCode, handshakeOutcome, handshakeUrl, isBeeSureQr, mergeHandshakeState, normaliseHandshakeInput, photoMaxAttemptsFrom, validationIdFromOrderToken } from '../utils/beesure-handshake';
 
 // Step 0 of the validation wizard: BeeSure's half of the mutual QR handshake. The LVA shows their code and QR, takes the customer's code by scan or typing through HandshakeHandler (GET lva-code, POST lva-scan), and goes on to the photos once both sides have scanned (Met). There is no skip.
 
@@ -33,7 +33,7 @@ type Phase = 'loading' | 'blocked' | 'panel' | 'failed';
 type LvaHandshakeStepProps = {
     orderToken: string | null;
     driverId: string | null;
-    onDone: () => void;
+    onDone: (photoMaxAttempts: number) => void;
     onLeave: () => void;
 };
 
@@ -61,6 +61,7 @@ export default function LvaHandshakeStep({ orderToken, driverId, onDone, onLeave
     const onLeaveRef = useRef(onLeave);
     onDoneRef.current = onDone;
     onLeaveRef.current = onLeave;
+    const photoMaxAttemptsRef = useRef(DEFAULT_PHOTO_MAX_ATTEMPTS);
     const doneRef = useRef(false);
     const stoppedRef = useRef(false);
     const mountedRef = useRef(false);
@@ -102,6 +103,9 @@ export default function LvaHandshakeStep({ orderToken, driverId, onDone, onLeave
                 parsed = null;
             }
         }
+        if (response.status === 200) {
+            photoMaxAttemptsRef.current = photoMaxAttemptsFrom(parsed);
+        }
         return handshakeOutcome(response.status, parsed);
     };
 
@@ -114,7 +118,7 @@ export default function LvaHandshakeStep({ orderToken, driverId, onDone, onLeave
         if (toastMessage) {
             toast.success(toastMessage);
         }
-        onDoneRef.current();
+        onDoneRef.current(photoMaxAttemptsRef.current);
     };
 
     // The first report_expired or handshake_driver_mismatch ends the step: one alert, and its OK leaves the wizard. Every later answer is dropped.
