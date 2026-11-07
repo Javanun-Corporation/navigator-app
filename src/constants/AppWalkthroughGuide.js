@@ -34,7 +34,7 @@ export const APP_WALKTHROUGH_MODULE = {
         },
         {
             heading: '4. Perform validation on arrival',
-            body: "When you arrive and start validation, scan the customer's QR code first to confirm you're on the right order.",
+            body: "When you arrive and start validation, show the customer your BeeSure code and scan or type theirs to confirm you're on the right order.",
             image: require('../../assets/images/training/guide-6-qr-handshake.png'),
         },
         {
