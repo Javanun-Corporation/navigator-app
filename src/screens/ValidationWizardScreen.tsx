@@ -1,13 +1,13 @@
 //validationwizardscreen.tsx
 import { Order } from '@fleetbase/sdk';
 import { useNavigation } from '@react-navigation/native';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Alert, ScrollView, TextInput } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button, Spinner, Text, XStack, YStack, useTheme } from 'tamagui';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { faCheck, faChevronLeft, faChevronRight, faClipboardCheck, faNoteSticky, faXmark } from '@fortawesome/free-solid-svg-icons';
-import AutomatedCaptureFlow from '../components/AutomatedCaptureFlow';
+import AutomatedCaptureFlow, { CaptureAttempts, CapturedPhotoSet } from '../components/AutomatedCaptureFlow';
 import LvaHandshakeStep from '../components/LvaHandshakeStep';
 import ScoreInfoButton from '../components/ScoreInfoButton';
 import ScoreWidgetDevToggle from '../components/ScoreWidgetDevToggle';
@@ -18,6 +18,7 @@ import { useTempStore } from '../contexts/TempStoreContext';
 import useFleetbase from '../hooks/use-fleetbase';
 import useStorage from '../hooks/use-storage';
 import { readOrderToken, serverErrorMessage } from '../utils/beesure-handshake';
+import { DEFAULT_PHOTO_MAX_ATTEMPTS } from '../utils/photo-capture';
 import { toast } from '../utils/toast';
 
 import Config from 'react-native-config';
@@ -64,10 +65,16 @@ const ValidationWizardScreen = ({ route }) => {
     const [step, setStep] = useState(0); // 0 = BeeSure handshake, 1 = Photos, 2 = Scores, 3 = Notes
     const [isSubmitting, setIsSubmitting] = useState(false); // Used for final submission
 
+    // The limit from step 0 and the tries this visit has used. The counters live here, not in the capture flow, so the remount from step 2's Back does not reset them.
+    const [photoMaxAttempts, setPhotoMaxAttempts] = useState(DEFAULT_PHOTO_MAX_ATTEMPTS);
+    const captureAttempts = useRef<CaptureAttempts>({ face: 0, frontFailures: 0, backFailures: 0 });
+
     // Clear tempstore if the user navigates to a different order
     useEffect(() => {
         if (store.validationOrderId !== orderData.id) {
+            captureAttempts.current = { face: 0, frontFailures: 0, backFailures: 0 };
             setValue('validationPhotos', []);
+            setValue('validationPhotoChecks', null);
             setValue('validationNotes', '');
             setValue('resultScore', null);
             setValue('confidenceScore', null);
@@ -80,8 +87,9 @@ const ValidationWizardScreen = ({ route }) => {
 
     // Called once the automated face + ID document capture sequence completes (after the
     // user has had a chance to review/retake each photo). Advances straight to the scores step.
-    const handleCaptureFlowComplete = ({ facePhoto, documentFront, documentBack }) => {
+    const handleCaptureFlowComplete = ({ facePhoto, documentFront, documentBack, checks }: CapturedPhotoSet) => {
         setValue('validationPhotos', [facePhoto, documentFront, documentBack]);
+        setValue('validationPhotoChecks', checks);
         toast.success('Face and ID photos captured.');
         setStep(2);
     };
@@ -164,6 +172,7 @@ const ValidationWizardScreen = ({ route }) => {
                 vibeCheckScore: store.vibeCheckScore,
                 subjectExists: store.subjectExists,
                 attachments,
+                phoneChecks: store.validationPhotoChecks ?? undefined,
             };
 
             const reportRes = await fetch(VALIDATION_COMPLETE_API_URL, {
@@ -187,6 +196,7 @@ const ValidationWizardScreen = ({ route }) => {
 
             // Clear the temp store
             setValue('validationPhotos', []);
+            setValue('validationPhotoChecks', null);
             setValue('validationNotes', '');
             setValue('resultScore', null);
             setValue('confidenceScore', null);
@@ -207,14 +217,14 @@ const ValidationWizardScreen = ({ route }) => {
     return (
         <YStack flex={1} bg='$background' safeArea>
             {/* --- STEP 0: BEESURE HANDSHAKE --- */}
-            {step === 0 && <LvaHandshakeStep orderToken={readOrderToken(order)} driverId={driver?.id ?? null} onDone={() => setStep(1)} onLeave={() => navigation.goBack()} />}
+            {step === 0 && <LvaHandshakeStep orderToken={readOrderToken(order)} driverId={driver?.id ?? null} onDone={(limit) => { setPhotoMaxAttempts(limit); setStep(1); }} onLeave={() => navigation.goBack()} />}
 
             {/* --- STEP 1: AUTOMATED FACE + ID CAPTURE --- */}
             {/* Full-bleed (no padding/heading) so the camera gets the entire screen - the step
                 indicator and instructions are overlaid on top of the camera itself instead. */}
             {step === 1 && (
                 <YStack flex={1} bg='#000'>
-                    <AutomatedCaptureFlow onComplete={handleCaptureFlowComplete} />
+                    <AutomatedCaptureFlow onComplete={handleCaptureFlowComplete} photoMaxAttempts={photoMaxAttempts} attempts={captureAttempts} />
 
                     {/* DEV BYPASS: Remove before pushing to production */}
                     {__DEV__ && (
