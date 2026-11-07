@@ -1,20 +1,37 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
+import { Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Button, Image, Text, XStack, YStack } from 'tamagui';
+import { Button, Image, Spinner, Text, XStack, YStack } from 'tamagui';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { faCheck, faRotateLeft } from '@fortawesome/free-solid-svg-icons';
 import FaceAutoCaptureCamera, { CapturedPhoto } from './FaceAutoCaptureCamera';
 import IdDocumentScanner from './IdDocumentScanner';
+import { toast } from '../utils/toast';
+import { PhoneCheck, acceptFailedPhoto, checkIdPhoto, retakeAlert, shrinkPhoto } from '../utils/photo-capture';
+
+export type PhotoChecks = {
+    lva_face: PhoneCheck;
+    lva_id: PhoneCheck;
+    lva_id_back: PhoneCheck;
+};
 
 export type CapturedPhotoSet = {
     facePhoto: string;
     documentFront: string;
     documentBack: string;
+    checks: PhotoChecks;
 };
+
+// How many tries the visit has used: face captures, and the failed checks of each ID side. The wizard owns this object so a remount of the flow does not reset it.
+export type CaptureAttempts = { face: number; frontFailures: number; backFailures: number };
 
 type AutomatedCaptureFlowProps = {
     onComplete: (photos: CapturedPhotoSet) => void;
+    photoMaxAttempts: number;
+    attempts: React.MutableRefObject<CaptureAttempts>;
 };
+
+type IdSide = 'front' | 'back';
 
 type SubStep = 'face' | 'document-front' | 'document-back' | 'review';
 
@@ -30,20 +47,36 @@ const STEP_GROUPS: { key: 'face' | 'document' | 'review'; label: string; subStep
  *   1. Face/selfie auto-capture (ML Kit face detection, see FaceAutoCaptureCamera)
  *   2. ID front, then ID back, auto-capture (native document scanner, see IdDocumentScanner) -
  *      scanned as two independent sessions so either side can be retaken on its own.
+ *      Each scan is shrunk and checked on the phone (see photo-capture); a failed check shows a retake alert and opens the scanner again, and the Nth failed check of a side is accepted anyway.
  *   3. Review - all three photos stay on screen so the driver can retake any of them;
  *      advancing past this checkpoint requires an explicit "Continue" tap (no auto-advance
  *      timer here - a timer previously raced against the Retake tap and made it look broken).
  */
-const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete }) => {
+const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete, photoMaxAttempts, attempts }) => {
     const insets = useSafeAreaInsets();
     const [subStep, setSubStep] = useState<SubStep>('face');
     const [facePhoto, setFacePhoto] = useState<string | null>(null);
     const [documentFront, setDocumentFront] = useState<string | null>(null);
     const [documentBack, setDocumentBack] = useState<string | null>(null);
+    // The side whose photo is being shrunk and checked, and the side whose retake alert is up. While either is set the scanner stays unmounted, because IdDocumentScanner opens a scan whenever it mounts.
+    const [checking, setChecking] = useState<IdSide | null>(null);
+    const [retakePending, setRetakePending] = useState<IdSide | null>(null);
+    // Bumped by the alert's Retake, so the scanner's key changes and it mounts once more.
+    const [scanCount, setScanCount] = useState(0);
+    // handleScan reads these through refs so its identity, and the scanner callbacks built on it, do not change while a scanner is mounted (a new onComplete would restart the scan).
+    const photoMaxAttemptsRef = useRef(photoMaxAttempts);
+    photoMaxAttemptsRef.current = photoMaxAttempts;
+    const attemptsRef = useRef(attempts);
+    attemptsRef.current = attempts;
+    const checksRef = useRef<Partial<PhotoChecks>>({});
 
     const handleFaceCaptured = useCallback(
-        (photo: CapturedPhoto) => {
-            setFacePhoto(photo.uri);
+        async (photo: CapturedPhoto) => {
+            const shrunk = await shrinkPhoto(photo.uri);
+            attemptsRef.current.current.face += 1;
+            // The live detector captures only when exactly one face is held steady, so that is the face photo's check.
+            checksRef.current.lva_face = { attempt: attemptsRef.current.current.face, result: 'pass', faceCount: 1, width: shrunk.width, height: shrunk.height, ratio: null };
+            setFacePhoto(shrunk.uri);
             // If the ID photos are already captured (i.e. this was a retake of just the face
             // from the review screen), go straight back to review instead of forcing the ID
             // step to be redone too.
@@ -67,6 +100,56 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete 
         setSubStep('review');
     }, []);
 
+    const handleScan = useCallback(
+        async (side: IdSide, uri: string) => {
+            setChecking(side);
+            const failuresKey = side === 'front' ? 'frontFailures' : 'backFailures';
+            const limit = photoMaxAttemptsRef.current;
+            const shrunk = await shrinkPhoto(uri);
+            const attempt = attemptsRef.current.current[failuresKey] + 1;
+            const check = await checkIdPhoto(side, shrunk, attempt);
+            const failed = check.result === 'fail_no_face' || check.result === 'fail_shape';
+            if (failed && !acceptFailedPhoto(attempt, limit)) {
+                attemptsRef.current.current[failuresKey] += 1;
+                // Both states change in one update, so the scanner never mounts between the check and the alert.
+                setRetakePending(side);
+                setChecking(null);
+                const { title, message } = retakeAlert(side, check.result, attempt, limit);
+                Alert.alert(
+                    title,
+                    message,
+                    [
+                        {
+                            text: 'Retake',
+                            onPress: () => {
+                                setRetakePending(null);
+                                setScanCount((count) => count + 1);
+                            },
+                        },
+                    ],
+                    { cancelable: false }
+                );
+                return;
+            }
+            if (failed) {
+                toast.info(`ID ${side} accepted after ${attempt} attempts.`);
+            }
+            setChecking(null);
+            if (side === 'front') {
+                checksRef.current.lva_id = check;
+                handleDocumentFrontCaptured(shrunk.uri);
+            } else {
+                checksRef.current.lva_id_back = check;
+                handleDocumentBackCaptured(shrunk.uri);
+            }
+        },
+        [handleDocumentFrontCaptured, handleDocumentBackCaptured]
+    );
+
+    const handleScanFront = useCallback((uri: string) => handleScan('front', uri), [handleScan]);
+
+    const handleScanBack = useCallback((uri: string) => handleScan('back', uri), [handleScan]);
+
     const handleRetakeFace = useCallback(() => {
         setFacePhoto(null);
         setSubStep('face');
@@ -83,8 +166,9 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete 
     }, []);
 
     const handleContinue = useCallback(() => {
-        if (!facePhoto || !documentFront || !documentBack) return;
-        onComplete({ facePhoto, documentFront, documentBack });
+        const { lva_face, lva_id, lva_id_back } = checksRef.current;
+        if (!facePhoto || !documentFront || !documentBack || !lva_face || !lva_id || !lva_id_back) return;
+        onComplete({ facePhoto, documentFront, documentBack, checks: { lva_face, lva_id, lva_id_back } });
     }, [facePhoto, documentFront, documentBack, onComplete]);
 
     const activeGroupIndex = STEP_GROUPS.findIndex((group) => group.subSteps.includes(subStep));
@@ -136,8 +220,19 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete 
 
             <YStack flex={1}>
                 {subStep === 'face' && <FaceAutoCaptureCamera onCapture={handleFaceCaptured} />}
-                {subStep === 'document-front' && <IdDocumentScanner side='front' onComplete={handleDocumentFrontCaptured} />}
-                {subStep === 'document-back' && <IdDocumentScanner side='back' onComplete={handleDocumentBackCaptured} />}
+                {(subStep === 'document-front' || subStep === 'document-back') &&
+                    (checking || retakePending ? (
+                        <YStack flex={1} ai='center' jc='center' bg='#000' space='$4'>
+                            <Spinner size='small' color='#fff' />
+                            <Text color='#fff' fontSize={15} textAlign='center'>
+                                Checking the ID photo…
+                            </Text>
+                        </YStack>
+                    ) : subStep === 'document-front' ? (
+                        <IdDocumentScanner key={`front-${scanCount}`} side='front' onComplete={handleScanFront} />
+                    ) : (
+                        <IdDocumentScanner key={`back-${scanCount}`} side='back' onComplete={handleScanBack} />
+                    ))}
                 {subStep === 'review' && facePhoto && documentFront && documentBack && (
                     <YStack flex={1} bg='$background' px='$5' pt={insets.top + 64} space='$5' style={{ paddingBottom: insets.bottom + 20 }}>
                         <YStack ai='center' space='$1.5'>
