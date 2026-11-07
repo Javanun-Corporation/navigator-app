@@ -29,7 +29,7 @@ beforeEach(() => {
 });
 
 describe('constants', () => {
-    test('the constants are the spec first picks', () => {
+    test("the constants are the spec's first picks", () => {
         expect(MAX_EDGE).toBe(1920);
         expect(JPEG_QUALITY).toBe(90);
         expect(ID1_RATIO).toBe(85.6 / 53.98);
@@ -97,7 +97,7 @@ describe('retakeAlert', () => {
 });
 
 describe('shrinkPhoto', () => {
-    test('shrinkPhoto calls the resizer with the spec arguments', async () => {
+    test("shrinkPhoto calls the resizer with the spec's arguments", async () => {
         ImageResizer.createResizedImage.mockResolvedValue({ uri: 'file:///small.jpg', width: 1920, height: 1080 });
         const result = await shrinkPhoto('file:///big.jpg');
         expect(ImageResizer.createResizedImage).toHaveBeenCalledWith('file:///big.jpg', 1920, 1920, 'JPEG', 90, 0, undefined, false, { mode: 'contain', onlyScaleDown: true });
@@ -130,7 +130,7 @@ describe('shrinkPhoto', () => {
 });
 
 describe('countFaces', () => {
-    test('countFaces passes the spec options', async () => {
+    test("countFaces passes the spec's options", async () => {
         detectFaces.mockResolvedValue([{}, {}]);
         const count = await countFaces('file:///a.jpg');
         expect(detectFaces).toHaveBeenCalledWith({
