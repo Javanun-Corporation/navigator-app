@@ -111,7 +111,7 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
             const failed = check.result === 'fail_no_face' || check.result === 'fail_shape';
             if (failed && !acceptFailedPhoto(attempt, limit)) {
                 attemptsRef.current.current[failuresKey] += 1;
-                // Both states change in one update, so the scanner never mounts between the check and the alert.
+                // Set retakePending before clearing checking, so the spinner stays up between the check and the alert even when each call renders on its own.
                 setRetakePending(side);
                 setChecking(null);
                 const { title, message } = retakeAlert(side, check.result, attempt, limit);
@@ -122,8 +122,9 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
                         {
                             text: 'Retake',
                             onPress: () => {
-                                setRetakePending(null);
+                                // The alert's callback is not batched on the old architecture, so each call renders on its own. Bump the key first: the render that clears retakePending then already has the new key, and the scanner mounts once.
                                 setScanCount((count) => count + 1);
+                                setRetakePending(null);
                             },
                         },
                     ],
@@ -134,7 +135,6 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
             if (failed) {
                 toast.info(`ID ${side} accepted after ${attempt} attempts.`);
             }
-            setChecking(null);
             if (side === 'front') {
                 checksRef.current.lva_id = check;
                 handleDocumentFrontCaptured(shrunk.uri);
@@ -142,6 +142,8 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
                 checksRef.current.lva_id_back = check;
                 handleDocumentBackCaptured(shrunk.uri);
             }
+            // Clear checking last. Updates after an await are not batched on the old architecture, so clearing it first would render this side's scanner again before subStep moves on, and that mount starts a second scan.
+            setChecking(null);
         },
         [handleDocumentFrontCaptured, handleDocumentBackCaptured]
     );

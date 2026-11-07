@@ -229,4 +229,54 @@ describe('AutomatedCaptureFlow', () => {
         expect(mockLog.mounts.back).toBe(1);
         expect(treeText()).not.toContain(CHECKING_TEXT);
     });
+
+    // The app runs the old architecture, where an update made from a native callback or after an await is not batched. act() batches, so these cases run outside it.
+    describe('without batched updates', () => {
+        const outsideAct = async (action) => {
+            global.IS_REACT_ACT_ENVIRONMENT = false;
+            try {
+                action();
+                await settle();
+                await settle();
+            } finally {
+                global.IS_REACT_ACT_ENVIRONMENT = true;
+            }
+        };
+
+        test('Retake mounts the scanner once more, not twice', async () => {
+            checkIdPhoto.mockImplementation(async (side, photo, attempt) => ({ attempt, result: 'fail_shape', faceCount: 1, width: photo.width, height: photo.height, ratio: 1 }));
+            await render();
+            await captureFace();
+            await scan('front', FRONT_URI);
+            expect(mockLog.mounts.front).toBe(1);
+            const [, , buttons] = Alert.alert.mock.calls[0];
+
+            await outsideAct(() => buttons[0].onPress());
+
+            expect(mockLog.mounts.front).toBe(2);
+        });
+
+        test('a front pass mounts the back scanner once and the front scanner no more', async () => {
+            await render();
+            await captureFace();
+            expect(mockLog.mounts.front).toBe(1);
+
+            await outsideAct(() => mockLog.scannerProps.front.onComplete(FRONT_URI));
+
+            expect(mockLog.mounts.front).toBe(1);
+            expect(mockLog.mounts.back).toBe(1);
+        });
+
+        test('a back pass opens the review without mounting the back scanner again', async () => {
+            await render();
+            await captureFace();
+            await scan('front', FRONT_URI);
+            expect(mockLog.mounts.back).toBe(1);
+
+            await outsideAct(() => mockLog.scannerProps.back.onComplete(BACK_URI));
+
+            expect(mockLog.mounts.back).toBe(1);
+            expect(treeText()).toContain('Review your photos');
+        });
+    });
 });
