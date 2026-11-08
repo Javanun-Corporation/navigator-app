@@ -230,6 +230,29 @@ describe('AutomatedCaptureFlow', () => {
         expect(treeText()).not.toContain(CHECKING_TEXT);
     });
 
+    test('a second Use Photo tap while the face is being shrunk is dropped', async () => {
+        let finishShrink;
+        shrinkPhoto.mockImplementationOnce((uri) => new Promise((resolve) => (finishShrink = () => resolve({ uri: 'shrunk:' + uri, width: 1600, height: 1009 }))));
+        await render();
+        const { onCapture } = mockLog.faceProps;
+
+        await act(async () => {
+            onCapture({ uri: FACE_URI, path: '/face.jpg' });
+            onCapture({ uri: FACE_URI, path: '/face.jpg' });
+            await settle();
+        });
+        expect(shrinkPhoto).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            finishShrink();
+            await settle();
+        });
+
+        expect(shrinkPhoto).toHaveBeenCalledTimes(1);
+        expect(attempts.current.face).toBe(1);
+        expect(mockLog.mounts.front).toBe(1);
+    });
+
     // The app runs the old architecture, where an update made from a native callback or after an await is not batched. act() batches, so these cases run outside it.
     describe('without batched updates', () => {
         const outsideAct = async (action) => {

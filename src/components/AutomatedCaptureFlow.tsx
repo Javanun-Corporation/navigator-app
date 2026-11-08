@@ -69,18 +69,28 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
     const attemptsRef = useRef(attempts);
     attemptsRef.current = attempts;
     const checksRef = useRef<Partial<PhotoChecks>>({});
+    // True while a face photo is being shrunk. FaceAutoCaptureCamera keeps its Use Photo button up until the flow moves on, so a second tap during the shrink is dropped instead of shrinking the photo again and counting a second face attempt.
+    const faceShrinkingRef = useRef(false);
 
     const handleFaceCaptured = useCallback(
         async (photo: CapturedPhoto) => {
-            const shrunk = await shrinkPhoto(photo.uri);
-            attemptsRef.current.current.face += 1;
-            // The live detector captures only when exactly one face is held steady, so that is the face photo's check.
-            checksRef.current.lva_face = { attempt: attemptsRef.current.current.face, result: 'pass', faceCount: 1, width: shrunk.width, height: shrunk.height, ratio: null };
-            setFacePhoto(shrunk.uri);
-            // If the ID photos are already captured (i.e. this was a retake of just the face
-            // from the review screen), go straight back to review instead of forcing the ID
-            // step to be redone too.
-            setSubStep(documentFront && documentBack ? 'review' : 'document-front');
+            if (faceShrinkingRef.current) {
+                return;
+            }
+            faceShrinkingRef.current = true;
+            try {
+                const shrunk = await shrinkPhoto(photo.uri);
+                attemptsRef.current.current.face += 1;
+                // The live detector captures only when exactly one face is held steady, so that is the face photo's check.
+                checksRef.current.lva_face = { attempt: attemptsRef.current.current.face, result: 'pass', faceCount: 1, width: shrunk.width, height: shrunk.height, ratio: null };
+                setFacePhoto(shrunk.uri);
+                // If the ID photos are already captured (i.e. this was a retake of just the face
+                // from the review screen), go straight back to review instead of forcing the ID
+                // step to be redone too.
+                setSubStep(documentFront && documentBack ? 'review' : 'document-front');
+            } finally {
+                faceShrinkingRef.current = false;
+            }
         },
         [documentFront, documentBack]
     );
@@ -224,9 +234,9 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
                 {subStep === 'face' && <FaceAutoCaptureCamera onCapture={handleFaceCaptured} />}
                 {(subStep === 'document-front' || subStep === 'document-back') &&
                     (checking || retakePending ? (
-                        <YStack flex={1} ai={'center'} jc={'center'} bg={'#000'} space={'$4'}>
-                            <Spinner size={'small'} color={'#fff'} />
-                            <Text color={'#fff'} fontSize={15} textAlign={'center'}>
+                        <YStack flex={1} ai='center' jc='center' bg='#000' space='$4'>
+                            <Spinner size='small' color='#fff' />
+                            <Text color='#fff' fontSize={15} textAlign='center'>
                                 Checking the ID photo…
                             </Text>
                         </YStack>
