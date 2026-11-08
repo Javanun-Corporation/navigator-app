@@ -224,9 +224,9 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
                 {subStep === 'face' && <FaceAutoCaptureCamera onCapture={handleFaceCaptured} />}
                 {(subStep === 'document-front' || subStep === 'document-back') &&
                     (checking || retakePending ? (
-                        <YStack flex={1} ai='center' jc='center' bg='#000' space='$4'>
-                            <Spinner size='small' color='#fff' />
-                            <Text color='#fff' fontSize={15} textAlign='center'>
+                        <YStack flex={1} ai={'center'} jc={'center'} bg={'#000'} space={'$4'}>
+                            <Spinner size={'small'} color={'#fff'} />
+                            <Text color={'#fff'} fontSize={15} textAlign={'center'}>
                                 Checking the ID photo…
                             </Text>
                         </YStack>
