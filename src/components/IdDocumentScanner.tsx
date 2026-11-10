@@ -33,7 +33,8 @@ const IdDocumentScanner: React.FC<IdDocumentScannerProps> = ({ side, onComplete 
             // something fixable from the JS side since the scan itself runs in a native Activity.
             await new Promise((resolve) => setTimeout(resolve, 500));
 
-            const result = await DocumentScanner.scanDocument({ maxNumDocuments: 1, responseType: ResponseType.ImageFilePath });
+            // Base mode (Android; patches/react-native-document-scanner-plugin+2.0.4.patch) has no filters: the full mode's default Enhance filter posterised the ID front's portrait so the face check found no face (harness run 20261110-153052).
+            const result = await DocumentScanner.scanDocument({ maxNumDocuments: 1, responseType: ResponseType.ImageFilePath, scannerMode: 'base' });
 
             if (result.status !== ScanDocumentResponseStatus.Success || !result.scannedImages || result.scannedImages.length === 0) {
                 setStatus('error');
