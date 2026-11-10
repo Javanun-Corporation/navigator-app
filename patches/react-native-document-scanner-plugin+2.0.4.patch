@@ -1,0 +1,55 @@
+diff --git a/node_modules/react-native-document-scanner-plugin/android/src/main/java/com/documentscanner/DocumentScannerModule.kt b/node_modules/react-native-document-scanner-plugin/android/src/main/java/com/documentscanner/DocumentScannerModule.kt
+index fbb6836..34ca0fe 100644
+--- a/node_modules/react-native-document-scanner-plugin/android/src/main/java/com/documentscanner/DocumentScannerModule.kt
++++ b/node_modules/react-native-document-scanner-plugin/android/src/main/java/com/documentscanner/DocumentScannerModule.kt
+@@ -49,9 +49,16 @@ class DocumentScannerModule(reactContext: ReactApplicationContext) :
+     val currentActivity = reactApplicationContext.getCurrentActivity()
+     val response: WritableMap = WritableNativeMap()
+ 
++    // navigator-app patch: an optional scannerMode ('base', 'baseWithFilter' or 'full'); anything else keeps the plugin's full mode, whose default Enhance filter posterises photos.
++    val scannerMode = when (if (options.hasKey("scannerMode")) options.getString("scannerMode") else null) {
++      "base" -> GmsDocumentScannerOptions.SCANNER_MODE_BASE
++      "baseWithFilter" -> GmsDocumentScannerOptions.SCANNER_MODE_BASE_WITH_FILTER
++      else -> GmsDocumentScannerOptions.SCANNER_MODE_FULL
++    }
++
+     val documentScannerOptionsBuilder = GmsDocumentScannerOptions.Builder()
+       .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
+-      .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
++      .setScannerMode(scannerMode)
+ 
+     if (options.hasKey("maxNumDocuments")) {
+       documentScannerOptionsBuilder.setPageLimit(
+diff --git a/node_modules/react-native-document-scanner-plugin/lib/typescript/src/NativeDocumentScanner.d.ts b/node_modules/react-native-document-scanner-plugin/lib/typescript/src/NativeDocumentScanner.d.ts
+index 6a7fd2e..268f2b6 100644
+--- a/node_modules/react-native-document-scanner-plugin/lib/typescript/src/NativeDocumentScanner.d.ts
++++ b/node_modules/react-native-document-scanner-plugin/lib/typescript/src/NativeDocumentScanner.d.ts
+@@ -19,6 +19,11 @@ export interface ScanDocumentOptions {
+      * @default: ResponseType.ImageFilePath
+      */
+     responseType?: ResponseType;
++    /**
++     * Android only (navigator-app patch): Google's scanner mode, 'base', 'baseWithFilter' or 'full'.
++     * @default: 'full'
++     */
++    scannerMode?: string;
+ }
+ export declare enum ResponseType {
+     /**
+diff --git a/node_modules/react-native-document-scanner-plugin/src/NativeDocumentScanner.ts b/node_modules/react-native-document-scanner-plugin/src/NativeDocumentScanner.ts
+index 449eeb0..cd0be48 100644
+--- a/node_modules/react-native-document-scanner-plugin/src/NativeDocumentScanner.ts
++++ b/node_modules/react-native-document-scanner-plugin/src/NativeDocumentScanner.ts
+@@ -23,6 +23,12 @@ export interface ScanDocumentOptions {
+    * @default: ResponseType.ImageFilePath
+    */
+   responseType?: ResponseType;
++
++  /**
++   * Android only (navigator-app patch): Google's scanner mode, 'base', 'baseWithFilter' or 'full'.
++   * @default: 'full'
++   */
++  scannerMode?: string;
+ }
+ 
+ export enum ResponseType {
