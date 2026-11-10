@@ -99,6 +99,15 @@ export const serverErrorMessage = (bodyText) => {
     }
 };
 
+// The limit of ID photo attempts when the answer has none (an older server, or the 409 already_submitted body). It repeats DEFAULT_PHOTO_MAX_ATTEMPTS of photo-capture.ts so this module stays free of native imports, and a test checks that the two match.
+export const DEFAULT_PHOTO_MAX_ATTEMPTS = 3;
+
+// body.photoMaxAttempts (lva_photo_max_attempts) when it is an integer from 1 to 999 or -1 (no limit), else the default.
+export const photoMaxAttemptsFrom = (body) => {
+    const value = body ? body.photoMaxAttempts : undefined;
+    return Number.isInteger(value) && ((value >= 1 && value <= 999) || value === -1) ? value : DEFAULT_PHOTO_MAX_ATTEMPTS;
+};
+
 // What step 0 does with one HandshakeHandler answer.
 export const handshakeOutcome = (status, body) => {
     const code = body && typeof body.code === 'string' ? body.code : null;
