@@ -62,15 +62,17 @@ const passCheck = (side, photo, attempt) => ({ attempt, result: 'pass', faceCoun
 
 let renderer;
 let onComplete;
+let onTry;
 let attempts;
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
-const render = async (photoMaxAttempts = 3, initialAttempts = { face: 0, frontFailures: 0, backFailures: 0 }) => {
+const render = async (photoMaxAttempts = 3, initialAttempts = { face: 0, frontFailures: 0, backFailures: 0, tries: { lva_face: 0, lva_id: 0, lva_id_back: 0 } }) => {
     onComplete = jest.fn();
+    onTry = jest.fn();
     attempts = { current: { ...initialAttempts } };
     await act(async () => {
-        renderer = TestRenderer.create(<AutomatedCaptureFlow onComplete={onComplete} photoMaxAttempts={photoMaxAttempts} attempts={attempts} />);
+        renderer = TestRenderer.create(<AutomatedCaptureFlow onComplete={onComplete} onTry={onTry} photoMaxAttempts={photoMaxAttempts} attempts={attempts} />);
     });
     return { photoMaxAttempts };
 };
@@ -157,12 +159,12 @@ describe('AutomatedCaptureFlow', () => {
         const before = mockLog.scannerProps.front.onComplete;
 
         await act(async () => {
-            renderer.update(<AutomatedCaptureFlow onComplete={onComplete} photoMaxAttempts={3} attempts={attempts} />);
+            renderer.update(<AutomatedCaptureFlow onComplete={onComplete} onTry={onTry} photoMaxAttempts={3} attempts={attempts} />);
         });
         expect(mockLog.scannerProps.front.onComplete).toBe(before);
 
         await act(async () => {
-            renderer.update(<AutomatedCaptureFlow onComplete={jest.fn()} photoMaxAttempts={5} attempts={attempts} />);
+            renderer.update(<AutomatedCaptureFlow onComplete={jest.fn()} onTry={onTry} photoMaxAttempts={5} attempts={attempts} />);
         });
         expect(mockLog.scannerProps.front.onComplete).toBe(before);
         expect(mockLog.mounts.front).toBe(1);
@@ -192,13 +194,14 @@ describe('AutomatedCaptureFlow', () => {
                 lva_id: { attempt: 1, result: 'pass', faceCount: 1, width: 1600, height: 1009, ratio: 1.586 },
                 lva_id_back: { attempt: 1, result: 'pass', faceCount: null, width: 1600, height: 1009, ratio: 1.586 },
             },
+            tryNos: { lva_face: 1, lva_id: 1, lva_id_back: 1 },
         });
-        expect(attempts.current).toEqual({ face: 1, frontFailures: 0, backFailures: 0 });
+        expect(attempts.current).toEqual({ face: 1, frontFailures: 0, backFailures: 0, tries: { lva_face: 1, lva_id: 1, lva_id_back: 1 } });
     });
 
     test('an accepted Nth failure goes on with a toast', async () => {
         checkIdPhoto.mockImplementation(async (side, photo, attempt) => (side === 'front' ? { attempt, result: 'fail_no_face', faceCount: 0, width: photo.width, height: photo.height, ratio: 1.586 } : passCheck(side, photo, attempt)));
-        await render(2, { face: 0, frontFailures: 1, backFailures: 0 });
+        await render(2, { face: 0, frontFailures: 1, backFailures: 0, tries: { lva_face: 0, lva_id: 0, lva_id_back: 0 } });
         await captureFace();
 
         await scan('front', FRONT_URI);
@@ -251,6 +254,121 @@ describe('AutomatedCaptureFlow', () => {
         expect(shrinkPhoto).toHaveBeenCalledTimes(1);
         expect(attempts.current.face).toBe(1);
         expect(mockLog.mounts.front).toBe(1);
+    });
+
+    describe('photo tries', () => {
+        const failNoFace = async (side, photo, attempt) => ({ attempt, result: 'fail_no_face', faceCount: 0, width: photo.width, height: photo.height, ratio: 1.586 });
+
+        const pressRetakeInAlert = async () => {
+            const [, , buttons] = Alert.alert.mock.calls[Alert.alert.mock.calls.length - 1];
+            await act(async () => {
+                buttons[0].onPress();
+                await settle();
+            });
+        };
+
+        const idTries = () => onTry.mock.calls.map((call) => call[0]).filter((photoTry) => photoTry.role === 'lva_id');
+
+        test('reports a used face photo as a kept try', async () => {
+            await render();
+
+            await captureFace();
+
+            expect(onTry).toHaveBeenCalledTimes(1);
+            expect(onTry).toHaveBeenCalledWith({
+                role: 'lva_face',
+                uri: 'shrunk:' + FACE_URI,
+                tryNo: 1,
+                kept: true,
+                check: { attempt: 1, result: 'pass', faceCount: 1, width: 1600, height: 1009, ratio: null },
+            });
+        });
+
+        test('reports a discarded face photo as a try that was not kept, and the next used one as try 2', async () => {
+            await render();
+
+            await act(async () => {
+                mockLog.faceProps.onDiscard({ uri: FACE_URI, path: '/face.jpg' });
+                await settle();
+            });
+
+            expect(treeText()).not.toContain('IdDocumentScanner');
+            expect(mockLog.mounts.front).toBe(0);
+            expect(attempts.current.face).toBe(0);
+
+            await captureFace();
+
+            expect(onTry).toHaveBeenCalledTimes(2);
+            expect(onTry.mock.calls[0][0]).toEqual({
+                role: 'lva_face',
+                uri: 'shrunk:' + FACE_URI,
+                tryNo: 1,
+                kept: false,
+                check: { attempt: 1, result: 'pass', faceCount: 1, width: 1600, height: 1009, ratio: null },
+            });
+            expect(onTry.mock.calls[1][0]).toEqual({
+                role: 'lva_face',
+                uri: 'shrunk:' + FACE_URI,
+                tryNo: 2,
+                kept: true,
+                check: { attempt: 1, result: 'pass', faceCount: 1, width: 1600, height: 1009, ratio: null },
+            });
+        });
+
+        test('reports a refused ID scan as a try that was not kept, and the retake as the next try', async () => {
+            checkIdPhoto.mockImplementationOnce(failNoFace);
+            await render();
+            await captureFace();
+
+            await scan('front', FRONT_URI);
+            await pressRetakeInAlert();
+            await scan('front', FRONT_URI);
+
+            expect(idTries()).toEqual([
+                { role: 'lva_id', uri: 'shrunk:' + FRONT_URI, tryNo: 1, kept: false, check: { attempt: 1, result: 'fail_no_face', faceCount: 0, width: 1600, height: 1009, ratio: 1.586 } },
+                { role: 'lva_id', uri: 'shrunk:' + FRONT_URI, tryNo: 2, kept: true, check: { attempt: 2, result: 'pass', faceCount: 1, width: 1600, height: 1009, ratio: 1.586 } },
+            ]);
+        });
+
+        test('reports a failed scan that is accepted at the limit as kept', async () => {
+            checkIdPhoto.mockImplementation(failNoFace);
+            await render(1);
+            await captureFace();
+
+            await scan('front', FRONT_URI);
+
+            expect(Alert.alert).not.toHaveBeenCalled();
+            expect(idTries()).toEqual([{ role: 'lva_id', uri: 'shrunk:' + FRONT_URI, tryNo: 1, kept: true, check: { attempt: 1, result: 'fail_no_face', faceCount: 0, width: 1600, height: 1009, ratio: 1.586 } }]);
+        });
+
+        test('Continue hands over the try number of each final photo', async () => {
+            checkIdPhoto.mockImplementationOnce(failNoFace);
+            await render();
+            await captureFace();
+            await scan('front', FRONT_URI);
+            await pressRetakeInAlert();
+            await scan('front', FRONT_URI);
+            await scan('back', BACK_URI);
+
+            await pressButton('Continue');
+
+            expect(onComplete).toHaveBeenCalledTimes(1);
+            expect(onComplete.mock.calls[0][0].tryNos).toEqual({ lva_face: 1, lva_id: 2, lva_id_back: 1 });
+        });
+
+        test('a new onTry does not restart a mounted scanner', async () => {
+            await render();
+            await captureFace();
+            expect(mockLog.mounts.front).toBe(1);
+            const before = mockLog.scannerProps.front.onComplete;
+
+            await act(async () => {
+                renderer.update(<AutomatedCaptureFlow onComplete={onComplete} onTry={jest.fn()} photoMaxAttempts={3} attempts={attempts} />);
+            });
+
+            expect(mockLog.scannerProps.front.onComplete).toBe(before);
+            expect(mockLog.mounts.front).toBe(1);
+        });
     });
 
     // The app runs the old architecture, where an update made from a native callback or after an await is not batched. act() batches, so these cases run outside it.
