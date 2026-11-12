@@ -356,6 +356,59 @@ describe('AutomatedCaptureFlow', () => {
             expect(onComplete.mock.calls[0][0].tryNos).toEqual({ lva_face: 1, lva_id: 2, lva_id_back: 1 });
         });
 
+        test('a retake from the review screen hands over the new try number', async () => {
+            await render();
+            await captureFace();
+            await scan('front', FRONT_URI);
+            await scan('back', BACK_URI);
+            expect(treeText()).toContain('Review your photos');
+
+            // The review screen lists Face, ID Front and ID Back in that order, each with its own Retake button.
+            const retakeButtons = renderer.root.findAll((node) => node.type === 'Button' && nodeText(node).includes('Retake'));
+            expect(retakeButtons).toHaveLength(3);
+            await act(async () => {
+                retakeButtons[1].props.onPress();
+                await settle();
+            });
+            await scan('front', FRONT_URI);
+            expect(treeText()).toContain('Review your photos');
+            await pressButton('Continue');
+
+            expect(onComplete).toHaveBeenCalledTimes(1);
+            expect(onComplete.mock.calls[0][0].tryNos).toEqual({ lva_face: 1, lva_id: 2, lva_id_back: 1 });
+            expect(idTries().map((photoTry) => [photoTry.tryNo, photoTry.kept])).toEqual([
+                [1, true],
+                [2, true],
+            ]);
+        });
+
+        test('a discarded face photo keeps the attempt it was taken at', async () => {
+            const finishers = {};
+            shrinkPhoto.mockImplementation((uri) => new Promise((resolve) => (finishers[uri] = () => resolve({ uri: 'shrunk:' + uri, width: 1600, height: 1009 }))));
+            await render();
+
+            await act(async () => {
+                mockLog.faceProps.onDiscard({ uri: 'file:///face-a.jpg', path: '/face-a.jpg' });
+                mockLog.faceProps.onCapture({ uri: 'file:///face-b.jpg', path: '/face-b.jpg' });
+                await settle();
+            });
+            await act(async () => {
+                finishers['file:///face-b.jpg']();
+                await settle();
+            });
+            expect(attempts.current.face).toBe(1);
+            await act(async () => {
+                finishers['file:///face-a.jpg']();
+                await settle();
+            });
+
+            const faceTries = onTry.mock.calls.map((call) => call[0]).filter((photoTry) => photoTry.role === 'lva_face');
+            expect(faceTries.map((photoTry) => [photoTry.tryNo, photoTry.kept, photoTry.check.attempt])).toEqual([
+                [2, true, 1],
+                [1, false, 1],
+            ]);
+        });
+
         test('a new onTry does not restart a mounted scanner', async () => {
             await render();
             await captureFace();

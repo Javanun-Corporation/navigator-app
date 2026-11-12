@@ -135,6 +135,24 @@ describe('FaceAutoCaptureCamera', () => {
         expect(onDiscard).not.toHaveBeenCalled();
     });
 
+    it('Use Photo then Retake does not hand the photo to onDiscard', async () => {
+        const onCapture = jest.fn();
+        const onDiscard = jest.fn();
+        const renderer = await mount({ onCapture, onDiscard, holdDurationMs: 0 });
+        await captureAPhoto();
+
+        await act(async () => {
+            buttonWithText(renderer, 'Use Photo').props.onPress();
+        });
+        await act(async () => {
+            buttonWithText(renderer, 'Retake').props.onPress();
+        });
+
+        expect(onCapture).toHaveBeenCalledTimes(1);
+        expect(onDiscard).not.toHaveBeenCalled();
+        expect(textOf(renderer)).not.toContain('Face captured');
+    });
+
     it('a double tap on Retake hands the photo over once', async () => {
         const onDiscard = jest.fn();
         const renderer = await mount({ onCapture: jest.fn(), onDiscard, holdDurationMs: 0 });

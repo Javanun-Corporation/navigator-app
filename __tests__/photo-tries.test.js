@@ -1,4 +1,4 @@
-import { createTryUploader, photoTryUrl, MAX_TRY_SENDS } from '../src/utils/photo-tries';
+import { createTryUploader, photoTryUrl, MAX_TRY_SENDS, TRY_RETRY_DELAY_MS } from '../src/utils/photo-tries';
 
 const PRESIGN_URL = 'https://presign.test/';
 const TRY_URL = 'https://complete.test/photo-tries';
@@ -26,6 +26,7 @@ const makeFetch = (plan = {}) => {
 };
 const uploader = (fetchFn) => createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', fetchFn, wait: async () => {} });
 const to = (calls, url) => calls.filter((c) => c.url === url || c.url.startsWith(url));
+const giveUpWarnings = () => console.warn.mock.calls.filter((call) => call[0] === 'Photo try could not be sent:');
 
 describe('photo tries uploader', () => {
     beforeEach(() => {
@@ -61,9 +62,20 @@ describe('photo tries uploader', () => {
 
     it('add retries a failed send and never rejects', async () => {
         const { fetchFn, calls } = makeFetch({ presign: [{ status: 500 }, { status: 500 }, { status: 500 }] });
-        await expect(uploader(fetchFn).add(TRY)).resolves.toBeUndefined();
+        const wait = jest.fn(async () => {});
+        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', fetchFn, wait });
+        await expect(up.add(TRY)).resolves.toBeUndefined();
         expect(to(calls, PRESIGN_URL)).toHaveLength(MAX_TRY_SENDS);
-        expect(console.warn).toHaveBeenCalledTimes(1);
+        expect(wait).toHaveBeenCalledTimes(2);
+        expect(wait).toHaveBeenNthCalledWith(1, TRY_RETRY_DELAY_MS);
+        expect(wait).toHaveBeenNthCalledWith(2, TRY_RETRY_DELAY_MS);
+        expect(giveUpWarnings()).toHaveLength(1);
+    });
+
+    it('a refused presign logs the status and body before it throws', async () => {
+        const { fetchFn } = makeFetch({ presign: [{ status: 409, body: 'nope' }] });
+        await expect(uploader(fetchFn).keyFor('lva_id', TRY.uri)).rejects.toThrow('Failed to fetch pre-signed URLs (HTTP 409).');
+        expect(console.warn).toHaveBeenCalledWith('Presign request failed:', 409, 'nope');
     });
 
     it('a retry after a failed record does not upload the photo again', async () => {
@@ -125,6 +137,45 @@ describe('photo tries uploader', () => {
         await expect(up.keyFor('lva_id', TRY.uri)).resolves.toBe('reports/r/v/tries/1/lva_id.jpg');
     });
 
+    it("keyFor's own upload is not given up after the timeout", async () => {
+        const base = makeFetch();
+        const fetchFn = jest.fn((url, init = {}) => {
+            if (url.startsWith('https://s3.test/put/')) {
+                return new Promise((resolve, reject) => {
+                    const timer = setTimeout(() => resolve({ ok: true }), 60);
+                    if (init.signal) {
+                        init.signal.addEventListener('abort', () => {
+                            clearTimeout(timer);
+                            reject(new Error('aborted'));
+                        });
+                    }
+                });
+            }
+            return base.fetchFn(url, init);
+        });
+        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', fetchFn, wait: async () => {}, requestTimeoutMs: 10 });
+        await expect(up.keyFor('lva_face', 'file:///face-9.jpg')).resolves.toBe('reports/r/v/tries/1/lva_face.jpg');
+    });
+
+    it('keyFor uploads again when the upload it joined fails', async () => {
+        const { fetchFn, calls } = makeFetch({ put: ['fail', 'ok'] });
+        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', fetchFn, wait: () => new Promise(() => {}) });
+        up.add(TRY);
+        await expect(up.keyFor('lva_id', TRY.uri)).resolves.toBe('reports/r/v/tries/2/lva_id.jpg');
+        expect(to(calls, PRESIGN_URL)).toHaveLength(2);
+        expect(to(calls, 'https://s3.test/put/')).toHaveLength(2);
+    });
+
+    it("a presign answer without the role rejects with today's message", async () => {
+        const fetchFn = jest.fn(async (url) => {
+            if (url === PRESIGN_URL) {
+                return { ok: true, json: async () => ({ presignedData: [] }) };
+            }
+            throw new Error(`unexpected url ${url}`);
+        });
+        await expect(uploader(fetchFn).keyFor('lva_id', TRY.uri)).rejects.toThrow('Missing photo or presigned URL for lva_id.');
+    });
+
     it('a request that never answers is given up after the timeout', async () => {
         const fetchFn = jest.fn((url, init = {}) => {
             if (url === PRESIGN_URL) {
@@ -136,7 +187,7 @@ describe('photo tries uploader', () => {
         });
         const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', fetchFn, wait: async () => {}, requestTimeoutMs: 10 });
         await expect(up.add(TRY)).resolves.toBeUndefined();
-        expect(console.warn).toHaveBeenCalledTimes(1);
+        expect(giveUpWarnings()).toHaveLength(1);
     });
 
     it('a body that never arrives is given up after the timeout', async () => {
@@ -154,6 +205,6 @@ describe('photo tries uploader', () => {
         });
         const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', fetchFn, wait: async () => {}, requestTimeoutMs: 10 });
         await expect(up.add(TRY)).resolves.toBeUndefined();
-        expect(console.warn).toHaveBeenCalledTimes(1);
+        expect(giveUpWarnings()).toHaveLength(1);
     });
 });
