@@ -17,6 +17,7 @@ type FaceAutoCaptureCameraProps = {
     instructionText?: string;
     holdDurationMs?: number; // how long a single, centered face must be held before auto-capture fires
     onCapture: (photo: CapturedPhoto) => void;
+    onDiscard?: (photo: CapturedPhoto) => void; // called once with the photo the LVA throws away by tapping Retake
 };
 
 type Phase = 'checking-permission' | 'detecting' | 'holding' | 'capturing' | 'captured';
@@ -41,6 +42,7 @@ const FaceAutoCaptureCamera: React.FC<FaceAutoCaptureCameraProps> = ({
     instructionText = "Center their face in the frame and hold still",
     holdDurationMs = 1200,
     onCapture,
+    onDiscard,
 }) => {
     const insets = useSafeAreaInsets();
     const cameraRef = useRef<CameraRef>(null);
@@ -52,6 +54,7 @@ const FaceAutoCaptureCamera: React.FC<FaceAutoCaptureCameraProps> = ({
     const holdStartedAtRef = useRef<number | null>(null);
     const capturingRef = useRef(false);
     const captureTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const discardedPathRef = useRef<string | null>(null);
 
     const faceDetectionOptions = useRef<FaceDetectionOptions>({
         performanceMode: 'fast',
@@ -175,9 +178,14 @@ const FaceAutoCaptureCamera: React.FC<FaceAutoCaptureCameraProps> = ({
     // where the driver can retake the photo, so it waits for a deliberate "Use Photo" tap
     // instead of racing a timer (which previously made Retake look broken if it fired first).
     const handleRetake = useCallback(() => {
+        // A double tap runs this twice with the same capturedPhoto in its closure, so the path last handed over is remembered and each photo is handed over once.
+        if (capturedPhoto && discardedPathRef.current !== capturedPhoto.path) {
+            discardedPathRef.current = capturedPhoto.path;
+            onDiscard?.(capturedPhoto);
+        }
         setCapturedPhoto(null);
         resetToDetecting();
-    }, [resetToDetecting]);
+    }, [capturedPhoto, onDiscard, resetToDetecting]);
 
     const handleUsePhoto = useCallback(() => {
         if (!capturedPhoto) return;
