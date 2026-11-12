@@ -11,7 +11,7 @@ const TrainingQuizScreen = () => {
     const navigation = useNavigation();
     const route = useRoute();
     const reviewMode = route.params?.reviewMode ?? false;
-    const { quiz, loadQuiz, submitQuiz } = useTraining();
+    const { quiz, loadQuiz, submitQuiz, skipTraining } = useTraining();
     const [isLoading, setIsLoading] = useState(true);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [answers, setAnswers] = useState({});
@@ -24,7 +24,12 @@ const TrainingQuizScreen = () => {
                 await loadQuiz();
             } catch (err) {
                 console.warn('[TrainingQuizScreen] Failed to load quiz:', err);
-                toast.error('Unable to load the quiz. Please try again.');
+                if (reviewMode) {
+                    toast.error('Unable to load the quiz. Please try again.');
+                } else {
+                    // At the mandatory gate, training that cannot be loaded is skipped: the root navigator swaps to the driver app once hasPassedTraining flips to true.
+                    skipTraining();
+                }
             } finally {
                 setIsLoading(false);
             }

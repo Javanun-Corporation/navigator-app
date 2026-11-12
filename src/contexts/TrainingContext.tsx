@@ -11,9 +11,8 @@ const TRAINING_QUIZ_API_URL = Config.TRAINING_QUIZ_API_URL;
 const TRAINING_STATUS_API_URL = Config.TRAINING_STATUS_API_URL;
 const TRAINING_QUIZ_SUBMIT_API_URL = Config.TRAINING_QUIZ_SUBMIT_API_URL;
 
-// DEV BYPASS: the /training routes aren't deployed on the dev API yet, so a debug build with the
-// training URLs left blank treats every driver as already trained. Remove once the routes exist.
-const DEV_SKIP_TRAINING = __DEV__ && !TRAINING_STATUS_API_URL;
+// Training that cannot be loaded is skipped. A build with no training address has nothing to load, so every driver goes straight to the app; this holds for debug and standalone builds alike.
+const TRAINING_NOT_SET_UP = !TRAINING_STATUS_API_URL;
 
 export const TrainingProvider = ({ children }) => {
     const { driver, isAuthenticated } = useAuth();
@@ -23,9 +22,13 @@ export const TrainingProvider = ({ children }) => {
     const [isCheckingStatus, setIsCheckingStatus] = useState(false);
     const [modules, setModules] = useState([]);
     const [quiz, setQuiz] = useState([]);
+    // Set when the training gate could not load the quiz. It lasts for this run of the app only and is never stored, so the next launch asks the training service again.
+    const [isTrainingSkipped, setIsTrainingSkipped] = useState(false);
+
+    const skipTraining = useCallback(() => setIsTrainingSkipped(true), []);
 
     const refreshStatus = useCallback(async () => {
-        if (!driver?.id || DEV_SKIP_TRAINING) return;
+        if (!driver?.id || TRAINING_NOT_SET_UP) return;
 
         setIsCheckingStatus(true);
         try {
@@ -101,7 +104,7 @@ export const TrainingProvider = ({ children }) => {
 
     const value = useMemo(
         () => ({
-            hasPassedTraining: DEV_SKIP_TRAINING || !!hasPassedTraining,
+            hasPassedTraining: TRAINING_NOT_SET_UP || isTrainingSkipped || !!hasPassedTraining,
             isCheckingStatus,
             modules,
             quiz,
@@ -109,8 +112,9 @@ export const TrainingProvider = ({ children }) => {
             loadModules,
             loadQuiz,
             submitQuiz,
+            skipTraining,
         }),
-        [hasPassedTraining, isCheckingStatus, modules, quiz, refreshStatus, loadModules, loadQuiz, submitQuiz]
+        [hasPassedTraining, isTrainingSkipped, isCheckingStatus, modules, quiz, refreshStatus, loadModules, loadQuiz, submitQuiz, skipTraining]
     );
 
     return <TrainingContext.Provider value={value}>{children}</TrainingContext.Provider>;
