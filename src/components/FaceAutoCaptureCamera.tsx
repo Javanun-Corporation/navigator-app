@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Animated, Image as RNImage, Platform, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import LinearGradient from 'react-native-linear-gradient';
-import { Camera, runAsync, useCameraDevice, useFrameProcessor } from 'react-native-vision-camera';
+import { Camera, runAtTargetFps, useCameraDevice, useFrameProcessor } from 'react-native-vision-camera';
 import type { Camera as CameraRef } from 'react-native-vision-camera';
 import { useFaceDetector } from 'react-native-vision-camera-face-detector';
 import type { Face, FaceDetectionOptions } from 'react-native-vision-camera-face-detector';
@@ -23,6 +23,9 @@ type Phase = 'checking-permission' | 'detecting' | 'holding' | 'capturing' | 'ca
 
 // Safety net: if a capture somehow never resolves, bail back to detecting instead of hanging forever.
 const CAPTURE_TIMEOUT_MS = 8000;
+
+// How many times a second the frame handler looks for faces. It runs on the camera's frame thread, so every look holds that thread up; five a second is plenty for a hold of about a second.
+const FACE_DETECTION_FPS = 5;
 
 /**
  * In-place back-camera step that uses real ML Kit face detection (via
@@ -155,10 +158,11 @@ const FaceAutoCaptureCamera: React.FC<FaceAutoCaptureCameraProps> = ({
 
     const runFacesDetectedOnJS = useMemo(() => Worklets.createRunOnJS(handleFacesDetected), [handleFacesDetected]);
 
+    // NOTE: deliberately NOT using vision-camera's runAsync - it crashes standalone (release) Android builds on the camera's frame thread as soon as the first frame arrives (vision-camera issues 2589 and 2820), while debug builds work. Faces are looked for directly on the frame thread instead, a few times a second.
     const frameProcessor = useFrameProcessor(
         (frame) => {
             'worklet';
-            runAsync(frame, () => {
+            runAtTargetFps(FACE_DETECTION_FPS, () => {
                 'worklet';
                 const faces = detectFaces(frame);
                 runFacesDetectedOnJS(faces);
