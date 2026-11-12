@@ -75,10 +75,15 @@ const ValidationWizardScreen = ({ route }) => {
     const uploaderFor = (orderToken: string) => (tryUploader.current ??= createTryUploader({ presignUrl: PRESIGN_API_URL as string, tryUrl: photoTryUrl(VALIDATION_COMPLETE_API_URL as string), orderToken }));
 
     // Sends each photo try to the server in the background as it is taken. A missing token is not reported here, because the submit stops with its own message.
+    // Reporting a try must never throw into the capture flow (PT4), and the final photos are still uploaded at Complete & Finish Order.
     const handleTry = (photoTry: PhotoTry) => {
-        const orderToken = readOrderToken(order);
-        if (orderToken) {
-            uploaderFor(orderToken).add(photoTry);
+        try {
+            const orderToken = readOrderToken(order);
+            if (orderToken) {
+                uploaderFor(orderToken).add(photoTry);
+            }
+        } catch (error) {
+            console.warn('ValidationWizardScreen: could not start a photo try upload:', error);
         }
     };
 
