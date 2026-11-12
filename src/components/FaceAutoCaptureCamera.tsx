@@ -178,7 +178,7 @@ const FaceAutoCaptureCamera: React.FC<FaceAutoCaptureCameraProps> = ({
     // where the driver can retake the photo, so it waits for a deliberate "Use Photo" tap
     // instead of racing a timer (which previously made Retake look broken if it fired first).
     const handleRetake = useCallback(() => {
-        // A photo is handed over once in total, to onCapture with Use Photo or to onDiscard with Retake, whichever comes first. The preview stays up while the flow works on a used photo, so Retake after Use Photo only clears the preview, and a double tap runs this twice with the same capturedPhoto in its closure.
+        // Retake hands a photo to onDiscard only if neither Use Photo nor an earlier Retake has handed it over: the preview stays up while the flow works on a used photo, and a double tap runs this twice with the same capturedPhoto in its closure.
         if (capturedPhoto && handedOverPathRef.current !== capturedPhoto.path) {
             handedOverPathRef.current = capturedPhoto.path;
             onDiscard?.(capturedPhoto);
@@ -188,9 +188,10 @@ const FaceAutoCaptureCamera: React.FC<FaceAutoCaptureCameraProps> = ({
     }, [capturedPhoto, onDiscard, resetToDetecting]);
 
     const handleUsePhoto = useCallback(() => {
-        if (!capturedPhoto || handedOverPathRef.current === capturedPhoto.path) {
+        if (!capturedPhoto) {
             return;
         }
+        // Every tap reaches onCapture, which drops a repeat itself; the path is only recorded so a later Retake skips onDiscard.
         handedOverPathRef.current = capturedPhoto.path;
         onCapture(capturedPhoto);
     }, [capturedPhoto, onCapture]);
