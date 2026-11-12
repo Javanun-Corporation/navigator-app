@@ -112,13 +112,9 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
     // A face photo the LVA threw away with Retake is still a try. It changes neither the face attempt count nor the flow's state, and it leaves faceShrinkingRef alone so a Use Photo tap during its shrink is not dropped.
     const handleFaceDiscarded = useCallback(async (photo: CapturedPhoto) => {
         const tryNo = (attemptsRef.current.current.tries.lva_face += 1);
-        try {
-            const shrunk = await shrinkPhoto(photo.uri);
-            const check: PhoneCheck = { attempt: attemptsRef.current.current.face + 1, result: 'pass', faceCount: 1, width: shrunk.width, height: shrunk.height, ratio: null };
-            onTryRef.current({ role: 'lva_face', uri: shrunk.uri, tryNo, kept: false, check });
-        } catch {
-            // A discarded photo that cannot be shrunk is not reported, and the capture flow carries on.
-        }
+        const shrunk = await shrinkPhoto(photo.uri);
+        const check: PhoneCheck = { attempt: attemptsRef.current.current.face + 1, result: 'pass', faceCount: 1, width: shrunk.width, height: shrunk.height, ratio: null };
+        onTryRef.current({ role: 'lva_face', uri: shrunk.uri, tryNo, kept: false, check });
     }, []);
 
     const handleDocumentFrontCaptured = useCallback(
