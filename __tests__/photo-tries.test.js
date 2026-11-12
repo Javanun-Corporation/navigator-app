@@ -138,4 +138,22 @@ describe('photo tries uploader', () => {
         await expect(up.add(TRY)).resolves.toBeUndefined();
         expect(console.warn).toHaveBeenCalledTimes(1);
     });
+
+    it('a body that never arrives is given up after the timeout', async () => {
+        const fetchFn = jest.fn(async (url, init = {}) => {
+            if (url === PRESIGN_URL) {
+                return {
+                    ok: true,
+                    json: () =>
+                        new Promise((resolve, reject) => {
+                            init.signal.addEventListener('abort', () => reject(new Error('aborted')));
+                        }),
+                };
+            }
+            throw new Error(`unexpected url ${url}`);
+        });
+        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', fetchFn, wait: async () => {}, requestTimeoutMs: 10 });
+        await expect(up.add(TRY)).resolves.toBeUndefined();
+        expect(console.warn).toHaveBeenCalledTimes(1);
+    });
 });

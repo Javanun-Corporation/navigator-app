@@ -32,29 +32,30 @@ export const createTryUploader = (config: {
     const states = new Map<string, UploadState>();
     const jsonHeaders = { 'Content-Type': 'application/json', 'X-BeeSure-Order-Token': orderToken };
 
-    // Every request carries a signal that aborts after the timeout, so a request that never answers counts as a failed one.
-    const request = async (url: string, init: RequestInit = {}): Promise<Response> => {
+    // Every request carries a signal that aborts after the timeout, and the timer runs until read has consumed the response body, so a request that never answers or a body that stalls counts as a failed one.
+    const request = async <T>(url: string, init: RequestInit, read: (res: Response) => Promise<T>): Promise<T> => {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
         try {
-            return await fetchFn(url, { ...init, signal: controller.signal });
+            return await read(await fetchFn(url, { ...init, signal: controller.signal }));
         } finally {
             clearTimeout(timer);
         }
     };
 
     const uploadPhoto = async (role: TryRole, uri: string): Promise<string> => {
-        const presignRes = await request(presignUrl, { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ roles: [role], tries: true }) });
-        if (!presignRes.ok) {
-            const bodyText = await presignRes.text().catch(() => '');
-            throw new Error(serverErrorMessage(bodyText) || `Failed to fetch pre-signed URLs (HTTP ${presignRes.status}).`);
-        }
-        const { presignedData } = await presignRes.json();
-        const presigned = presignedData.find((p: { role: string }) => p.role === role);
+        const presigned = await request(presignUrl, { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ roles: [role], tries: true }) }, async (res) => {
+            if (!res.ok) {
+                const bodyText = await res.text().catch(() => '');
+                throw new Error(serverErrorMessage(bodyText) || `Failed to fetch pre-signed URLs (HTTP ${res.status}).`);
+            }
+            const { presignedData } = await res.json();
+            return presignedData.find((p: { role: string }) => p.role === role);
+        });
         if (!presigned) throw new Error(`Missing presigned URL for ${role}.`);
-        const blob = await (await request(uri)).blob();
-        const putRes = await request(presigned.uploadUrl, { method: 'PUT', body: blob, headers: { 'Content-Type': blob.type || 'image/jpeg' } });
-        if (!putRes.ok) throw new Error(`S3 Upload failed for ${role}`);
+        const blob = await request(uri, {}, (res) => res.blob());
+        const putOk = await request(presigned.uploadUrl, { method: 'PUT', body: blob, headers: { 'Content-Type': blob.type || 'image/jpeg' } }, async (res) => res.ok);
+        if (!putOk) throw new Error(`S3 Upload failed for ${role}`);
         return presigned.key;
     };
 
@@ -84,12 +85,12 @@ export const createTryUploader = (config: {
 
     const send = async (photoTry: PhotoTry): Promise<void> => {
         const key = await ensureUploaded(photoTry.role, photoTry.uri);
-        const res = await request(tryUrl, {
-            method: 'POST',
-            headers: jsonHeaders,
-            body: JSON.stringify({ role: photoTry.role, key, tryNo: photoTry.tryNo, kept: photoTry.kept, phoneCheck: photoTry.check }),
-        });
-        if (!res.ok) throw new Error(`Recording the photo try failed (HTTP ${res.status}).`);
+        const status = await request(
+            tryUrl,
+            { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ role: photoTry.role, key, tryNo: photoTry.tryNo, kept: photoTry.kept, phoneCheck: photoTry.check }) },
+            async (res) => (res.ok ? null : res.status)
+        );
+        if (status !== null) throw new Error(`Recording the photo try failed (HTTP ${status}).`);
     };
 
     const add = async (photoTry: PhotoTry): Promise<void> => {
