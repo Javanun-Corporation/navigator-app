@@ -22,11 +22,12 @@ export const createTryUploader = (config: {
     presignUrl: string;
     tryUrl: string;
     orderToken: string;
+    driverId: string;
     fetchFn?: typeof fetch;
     wait?: (ms: number) => Promise<void>;
     requestTimeoutMs?: number;
 }): TryUploader => {
-    const { presignUrl, tryUrl, orderToken } = config;
+    const { presignUrl, tryUrl, orderToken, driverId } = config;
     const fetchFn = config.fetchFn || fetch;
     const wait = config.wait || ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
     const requestTimeoutMs = config.requestTimeoutMs ?? TRY_REQUEST_TIMEOUT_MS;
@@ -136,7 +137,11 @@ export const createTryUploader = (config: {
         const key = await ensureUploaded(photoTry.role, photoTry.uri);
         const status = await request(
             tryUrl,
-            { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ role: photoTry.role, key, tryNo: photoTry.tryNo, kept: photoTry.kept, phoneCheck: photoTry.check }) },
+            {
+                method: 'POST',
+                headers: jsonHeaders,
+                body: JSON.stringify({ fleetbaseDriverId: driverId, role: photoTry.role, key, tryNo: photoTry.tryNo, kept: photoTry.kept, phoneCheck: photoTry.check }),
+            },
             async (res) => (res.ok ? null : res.status),
             true
         );

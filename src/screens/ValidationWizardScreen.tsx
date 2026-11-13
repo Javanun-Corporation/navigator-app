@@ -72,14 +72,14 @@ const ValidationWizardScreen = ({ route }) => {
 
     // The uploader for this visit, made on first use because it needs the order token, and dropped with the visit's other state.
     const tryUploader = useRef<TryUploader | null>(null);
-    const uploaderFor = (orderToken: string) => (tryUploader.current ??= createTryUploader({ presignUrl: PRESIGN_API_URL as string, tryUrl: photoTryUrl(VALIDATION_COMPLETE_API_URL as string), orderToken }));
+    const uploaderFor = (orderToken: string) => (tryUploader.current ??= createTryUploader({ presignUrl: PRESIGN_API_URL as string, tryUrl: photoTryUrl(VALIDATION_COMPLETE_API_URL as string), orderToken, driverId: driver?.id ?? '' }));
 
-    // Sends each photo try to the server in the background as it is taken. A missing token is not reported here, because the submit stops with its own message.
+    // Sends each photo try to the server in the background as it is taken. A missing token or driver is not reported here, because the submit stops with its own message.
     // Reporting a try must never throw into the capture flow (PT4), and the final photos are still uploaded at Complete & Finish Order.
     const handleTry = (photoTry: PhotoTry) => {
         try {
             const orderToken = readOrderToken(order);
-            if (orderToken) {
+            if (orderToken && driver?.id) {
                 uploaderFor(orderToken).add(photoTry);
             }
         } catch (error) {

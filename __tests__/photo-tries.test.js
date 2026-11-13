@@ -24,7 +24,7 @@ const makeFetch = (plan = {}) => {
     });
     return { fetchFn, calls };
 };
-const uploader = (fetchFn) => createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', fetchFn, wait: async () => {} });
+const uploader = (fetchFn) => createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', driverId: 'driver_1', fetchFn, wait: async () => {} });
 const to = (calls, url) => calls.filter((c) => c.url === url || c.url.startsWith(url));
 const giveUpWarnings = () => console.warn.mock.calls.filter((call) => call[0] === 'Photo try could not be sent:');
 
@@ -57,13 +57,23 @@ describe('photo tries uploader', () => {
         expect(puts[0].method).toBe('PUT');
         const record = to(calls, TRY_URL);
         expect(record).toHaveLength(1);
-        expect(record[0].body).toBe(JSON.stringify({ role: 'lva_id', key: 'reports/r/v/tries/1/lva_id.jpg', tryNo: 1, kept: false, phoneCheck: TRY.check }));
+        expect(record[0].body).toBe(JSON.stringify({ fleetbaseDriverId: 'driver_1', role: 'lva_id', key: 'reports/r/v/tries/1/lva_id.jpg', tryNo: 1, kept: false, phoneCheck: TRY.check }));
+    });
+
+    it('the presign and the upload carry no driver', async () => {
+        const { fetchFn, calls } = makeFetch();
+        await uploader(fetchFn).add(TRY);
+        const presign = to(calls, PRESIGN_URL);
+        expect(presign[0].body).toBe(JSON.stringify({ roles: ['lva_id'], tries: true }));
+        expect(presign[0].body).not.toContain('fleetbaseDriverId');
+        const puts = to(calls, 'https://s3.test/put/');
+        expect(String(puts[0].body ?? '')).not.toContain('fleetbaseDriverId');
     });
 
     it('add retries a failed send and never rejects', async () => {
         const { fetchFn, calls } = makeFetch({ presign: [{ status: 500 }, { status: 500 }, { status: 500 }] });
         const wait = jest.fn(async () => {});
-        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', fetchFn, wait });
+        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', driverId: 'driver_1', fetchFn, wait });
         await expect(up.add(TRY)).resolves.toBeUndefined();
         expect(to(calls, PRESIGN_URL)).toHaveLength(MAX_TRY_SENDS);
         expect(wait).toHaveBeenCalledTimes(2);
@@ -132,7 +142,7 @@ describe('photo tries uploader', () => {
 
     it('keyFor does not wait for the record call or a retry wait', async () => {
         const { fetchFn } = makeFetch({ record: ['fail', 'fail', 'fail'] });
-        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', fetchFn, wait: () => new Promise(() => {}) });
+        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', driverId: 'driver_1', fetchFn, wait: () => new Promise(() => {}) });
         up.add(TRY);
         await expect(up.keyFor('lva_id', TRY.uri)).resolves.toBe('reports/r/v/tries/1/lva_id.jpg');
     });
@@ -153,13 +163,13 @@ describe('photo tries uploader', () => {
             }
             return base.fetchFn(url, init);
         });
-        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', fetchFn, wait: async () => {}, requestTimeoutMs: 10 });
+        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', driverId: 'driver_1', fetchFn, wait: async () => {}, requestTimeoutMs: 10 });
         await expect(up.keyFor('lva_face', 'file:///face-9.jpg')).resolves.toBe('reports/r/v/tries/1/lva_face.jpg');
     });
 
     it('keyFor uploads again when the upload it joined fails', async () => {
         const { fetchFn, calls } = makeFetch({ put: ['fail', 'ok'] });
-        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', fetchFn, wait: () => new Promise(() => {}) });
+        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', driverId: 'driver_1', fetchFn, wait: () => new Promise(() => {}) });
         up.add(TRY);
         await expect(up.keyFor('lva_id', TRY.uri)).resolves.toBe('reports/r/v/tries/2/lva_id.jpg');
         expect(to(calls, PRESIGN_URL)).toHaveLength(2);
@@ -185,7 +195,7 @@ describe('photo tries uploader', () => {
             }
             throw new Error(`unexpected url ${url}`);
         });
-        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', fetchFn, wait: async () => {}, requestTimeoutMs: 10 });
+        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', driverId: 'driver_1', fetchFn, wait: async () => {}, requestTimeoutMs: 10 });
         await expect(up.add(TRY)).resolves.toBeUndefined();
         expect(giveUpWarnings()).toHaveLength(1);
     });
@@ -203,7 +213,7 @@ describe('photo tries uploader', () => {
             }
             throw new Error(`unexpected url ${url}`);
         });
-        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', fetchFn, wait: async () => {}, requestTimeoutMs: 10 });
+        const up = createTryUploader({ presignUrl: PRESIGN_URL, tryUrl: TRY_URL, orderToken: 'token-1', driverId: 'driver_1', fetchFn, wait: async () => {}, requestTimeoutMs: 10 });
         await expect(up.add(TRY)).resolves.toBeUndefined();
         expect(giveUpWarnings()).toHaveLength(1);
     });
