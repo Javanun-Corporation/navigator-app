@@ -17,6 +17,7 @@ type FaceAutoCaptureCameraProps = {
     instructionText?: string;
     holdDurationMs?: number; // how long a single, centered face must be held before auto-capture fires
     onCapture: (photo: CapturedPhoto) => void;
+    onDiscard?: (photo: CapturedPhoto) => void; // called once with the photo the LVA throws away by tapping Retake, unless Use Photo already took it
 };
 
 type Phase = 'checking-permission' | 'detecting' | 'holding' | 'capturing' | 'captured';
@@ -41,6 +42,7 @@ const FaceAutoCaptureCamera: React.FC<FaceAutoCaptureCameraProps> = ({
     instructionText = "Center their face in the frame and hold still",
     holdDurationMs = 1200,
     onCapture,
+    onDiscard,
 }) => {
     const insets = useSafeAreaInsets();
     const cameraRef = useRef<CameraRef>(null);
@@ -52,6 +54,7 @@ const FaceAutoCaptureCamera: React.FC<FaceAutoCaptureCameraProps> = ({
     const holdStartedAtRef = useRef<number | null>(null);
     const capturingRef = useRef(false);
     const captureTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const handedOverPathRef = useRef<string | null>(null);
 
     const faceDetectionOptions = useRef<FaceDetectionOptions>({
         performanceMode: 'fast',
@@ -175,12 +178,21 @@ const FaceAutoCaptureCamera: React.FC<FaceAutoCaptureCameraProps> = ({
     // where the driver can retake the photo, so it waits for a deliberate "Use Photo" tap
     // instead of racing a timer (which previously made Retake look broken if it fired first).
     const handleRetake = useCallback(() => {
+        // Retake hands a photo to onDiscard only if neither Use Photo nor an earlier Retake has handed it over: the preview stays up while the flow works on a used photo, and a double tap runs this twice with the same capturedPhoto in its closure.
+        if (capturedPhoto && handedOverPathRef.current !== capturedPhoto.path) {
+            handedOverPathRef.current = capturedPhoto.path;
+            onDiscard?.(capturedPhoto);
+        }
         setCapturedPhoto(null);
         resetToDetecting();
-    }, [resetToDetecting]);
+    }, [capturedPhoto, onDiscard, resetToDetecting]);
 
     const handleUsePhoto = useCallback(() => {
-        if (!capturedPhoto) return;
+        if (!capturedPhoto) {
+            return;
+        }
+        // Every tap reaches onCapture, which drops a repeat itself; the path is only recorded so a later Retake skips onDiscard.
+        handedOverPathRef.current = capturedPhoto.path;
         onCapture(capturedPhoto);
     }, [capturedPhoto, onCapture]);
 

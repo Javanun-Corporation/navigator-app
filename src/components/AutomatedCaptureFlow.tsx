@@ -8,6 +8,7 @@ import FaceAutoCaptureCamera, { CapturedPhoto } from './FaceAutoCaptureCamera';
 import IdDocumentScanner from './IdDocumentScanner';
 import { toast } from '../utils/toast';
 import { PhoneCheck, acceptFailedPhoto, checkIdPhoto, retakeAlert, shrinkPhoto } from '../utils/photo-capture';
+import type { PhotoTry, TryRole } from '../utils/photo-tries';
 
 export type PhotoChecks = {
     lva_face: PhoneCheck;
@@ -20,13 +21,16 @@ export type CapturedPhotoSet = {
     documentFront: string;
     documentBack: string;
     checks: PhotoChecks;
+    // The try number of each final photo, so the submit can name the uploaded try it uses.
+    tryNos: Record<TryRole, number>;
 };
 
-// How many tries the visit has used: face captures, and the failed checks of each ID side. The wizard owns this object so a remount of the flow does not reset it.
-export type CaptureAttempts = { face: number; frontFailures: number; backFailures: number };
+// How many tries the visit has used: face captures, and the failed checks of each ID side, plus every photo try of each role (kept or not, never reset during a visit). The wizard owns this object so a remount of the flow does not reset it.
+export type CaptureAttempts = { face: number; frontFailures: number; backFailures: number; tries: Record<TryRole, number> };
 
 type AutomatedCaptureFlowProps = {
     onComplete: (photos: CapturedPhotoSet) => void;
+    onTry: (photoTry: PhotoTry) => void;
     photoMaxAttempts: number;
     attempts: React.MutableRefObject<CaptureAttempts>;
 };
@@ -48,11 +52,12 @@ const STEP_GROUPS: { key: 'face' | 'document' | 'review'; label: string; subStep
  *   2. ID front, then ID back, auto-capture (native document scanner, see IdDocumentScanner) -
  *      scanned as two independent sessions so either side can be retaken on its own.
  *      Each scan is shrunk and checked on the phone (see photo-capture); a failed check shows a retake alert and opens the scanner again, and the Nth failed check of a side is accepted anyway.
+ *      Every scan and every face photo, used or discarded, is reported to onTry as a numbered try, kept or not.
  *   3. Review - all three photos stay on screen so the driver can retake any of them;
  *      advancing past this checkpoint requires an explicit "Continue" tap (no auto-advance
  *      timer here - a timer previously raced against the Retake tap and made it look broken).
  */
-const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete, photoMaxAttempts, attempts }) => {
+const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete, onTry, photoMaxAttempts, attempts }) => {
     const insets = useSafeAreaInsets();
     const [subStep, setSubStep] = useState<SubStep>('face');
     const [facePhoto, setFacePhoto] = useState<string | null>(null);
@@ -68,7 +73,11 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
     photoMaxAttemptsRef.current = photoMaxAttempts;
     const attemptsRef = useRef(attempts);
     attemptsRef.current = attempts;
+    const onTryRef = useRef(onTry);
+    onTryRef.current = onTry;
     const checksRef = useRef<Partial<PhotoChecks>>({});
+    // The try number of the photo now kept for each role.
+    const tryNosRef = useRef<Partial<Record<TryRole, number>>>({});
     // True while a face photo is being shrunk. FaceAutoCaptureCamera keeps its Use Photo button up until the flow moves on, so a second tap during the shrink is dropped instead of shrinking the photo again and counting a second face attempt.
     const faceShrinkingRef = useRef(false);
 
@@ -79,10 +88,15 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
             }
             faceShrinkingRef.current = true;
             try {
+                // Take the try number before the await, so two tries whose shrinks overlap keep the order they were taken in.
+                const tryNo = (attemptsRef.current.current.tries.lva_face += 1);
                 const shrunk = await shrinkPhoto(photo.uri);
                 attemptsRef.current.current.face += 1;
                 // The live detector captures only when exactly one face is held steady, so that is the face photo's check.
-                checksRef.current.lva_face = { attempt: attemptsRef.current.current.face, result: 'pass', faceCount: 1, width: shrunk.width, height: shrunk.height, ratio: null };
+                const check: PhoneCheck = { attempt: attemptsRef.current.current.face, result: 'pass', faceCount: 1, width: shrunk.width, height: shrunk.height, ratio: null };
+                checksRef.current.lva_face = check;
+                tryNosRef.current.lva_face = tryNo;
+                onTryRef.current({ role: 'lva_face', uri: shrunk.uri, tryNo, kept: true, check });
                 setFacePhoto(shrunk.uri);
                 // If the ID photos are already captured (i.e. this was a retake of just the face
                 // from the review screen), go straight back to review instead of forcing the ID
@@ -94,6 +108,16 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
         },
         [documentFront, documentBack]
     );
+
+    // A face photo the LVA threw away with Retake is still a try. It changes neither the face attempt count nor the flow's state, and it leaves faceShrinkingRef alone so a Use Photo tap during its shrink is not dropped.
+    const handleFaceDiscarded = useCallback(async (photo: CapturedPhoto) => {
+        const tryNo = (attemptsRef.current.current.tries.lva_face += 1);
+        // The attempt the photo was taken at is read before the await too, because a used photo whose shrink finishes first moves the count on.
+        const attempt = attemptsRef.current.current.face + 1;
+        const shrunk = await shrinkPhoto(photo.uri);
+        const check: PhoneCheck = { attempt, result: 'pass', faceCount: 1, width: shrunk.width, height: shrunk.height, ratio: null };
+        onTryRef.current({ role: 'lva_face', uri: shrunk.uri, tryNo, kept: false, check });
+    }, []);
 
     const handleDocumentFrontCaptured = useCallback(
         (uri: string) => {
@@ -114,12 +138,17 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
         async (side: IdSide, uri: string) => {
             setChecking(side);
             const failuresKey = side === 'front' ? 'frontFailures' : 'backFailures';
+            const role: TryRole = side === 'front' ? 'lva_id' : 'lva_id_back';
             const limit = photoMaxAttemptsRef.current;
+            // Take the try number before the first await, so two tries whose shrinks overlap keep the order they were taken in.
+            const tryNo = (attemptsRef.current.current.tries[role] += 1);
             const shrunk = await shrinkPhoto(uri);
             const attempt = attemptsRef.current.current[failuresKey] + 1;
             const check = await checkIdPhoto(side, shrunk, attempt);
             const failed = check.result === 'fail_no_face' || check.result === 'fail_shape';
-            if (failed && !acceptFailedPhoto(attempt, limit)) {
+            const retake = failed && !acceptFailedPhoto(attempt, limit);
+            onTryRef.current({ role, uri: shrunk.uri, tryNo, kept: !retake, check });
+            if (retake) {
                 attemptsRef.current.current[failuresKey] += 1;
                 // Set retakePending before clearing checking, so the spinner stays up between the check and the alert even when each call renders on its own.
                 setRetakePending(side);
@@ -145,6 +174,7 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
             if (failed) {
                 toast.info(`ID ${side} accepted after ${attempt} attempts.`);
             }
+            tryNosRef.current[role] = tryNo;
             if (side === 'front') {
                 checksRef.current.lva_id = check;
                 handleDocumentFrontCaptured(shrunk.uri);
@@ -179,8 +209,9 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
 
     const handleContinue = useCallback(() => {
         const { lva_face, lva_id, lva_id_back } = checksRef.current;
-        if (!facePhoto || !documentFront || !documentBack || !lva_face || !lva_id || !lva_id_back) return;
-        onComplete({ facePhoto, documentFront, documentBack, checks: { lva_face, lva_id, lva_id_back } });
+        const { lva_face: faceTryNo, lva_id: idTryNo, lva_id_back: idBackTryNo } = tryNosRef.current;
+        if (!facePhoto || !documentFront || !documentBack || !lva_face || !lva_id || !lva_id_back || !faceTryNo || !idTryNo || !idBackTryNo) return;
+        onComplete({ facePhoto, documentFront, documentBack, checks: { lva_face, lva_id, lva_id_back }, tryNos: { lva_face: faceTryNo, lva_id: idTryNo, lva_id_back: idBackTryNo } });
     }, [facePhoto, documentFront, documentBack, onComplete]);
 
     const activeGroupIndex = STEP_GROUPS.findIndex((group) => group.subSteps.includes(subStep));
@@ -231,7 +262,7 @@ const AutomatedCaptureFlow: React.FC<AutomatedCaptureFlowProps> = ({ onComplete,
             </XStack>
 
             <YStack flex={1}>
-                {subStep === 'face' && <FaceAutoCaptureCamera onCapture={handleFaceCaptured} />}
+                {subStep === 'face' && <FaceAutoCaptureCamera onCapture={handleFaceCaptured} onDiscard={handleFaceDiscarded} />}
                 {(subStep === 'document-front' || subStep === 'document-back') &&
                     (checking || retakePending ? (
                         <YStack flex={1} ai='center' jc='center' bg='#000' space='$4'>

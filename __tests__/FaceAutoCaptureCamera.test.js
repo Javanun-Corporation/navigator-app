@@ -38,6 +38,7 @@ jest.mock('react-native-vision-camera', () => {
     const mockReact = require('react');
     const Camera = mockReact.forwardRef((props, ref) => {
         mockLog.cameraProps = props;
+        mockReact.useImperativeHandle(ref, () => ({ takePhoto: async () => ({ path: '/cache/face-1.jpg' }) }));
         return mockReact.createElement('Camera');
     });
     Camera.getCameraPermissionStatus = async () => 'granted';
@@ -57,12 +58,21 @@ const FRAME = { width: 1280, height: 720 };
 
 const textOf = (renderer) => JSON.stringify(renderer.toJSON());
 
-const mount = async () => {
+const mount = async (props = { onCapture: jest.fn() }) => {
     let renderer;
     await act(async () => {
-        renderer = TestRenderer.create(React.createElement(FaceAutoCaptureCamera, { onCapture: jest.fn() }));
+        renderer = TestRenderer.create(React.createElement(FaceAutoCaptureCamera, props));
     });
     return renderer;
+};
+
+const buttonWithText = (renderer, text) =>
+    renderer.root.findAll((node) => node.type === 'Button' && node.findAll((child) => child.type === 'ButtonText' && child.props.children === text).length > 0)[0];
+
+const captureAPhoto = async () => {
+    await act(async () => {
+        mockLog.cameraProps.frameProcessor(FRAME);
+    });
 };
 
 describe('FaceAutoCaptureCamera', () => {
@@ -94,5 +104,86 @@ describe('FaceAutoCaptureCamera', () => {
         });
 
         expect(runAtTargetFps).toHaveBeenCalledWith(5, expect.any(Function));
+    });
+
+    it('hands a discarded photo to onDiscard when Retake is tapped', async () => {
+        const onCapture = jest.fn();
+        const onDiscard = jest.fn();
+        const renderer = await mount({ onCapture, onDiscard, holdDurationMs: 0 });
+        await captureAPhoto();
+
+        await act(async () => {
+            buttonWithText(renderer, 'Retake').props.onPress();
+        });
+
+        expect(onDiscard).toHaveBeenCalledTimes(1);
+        expect(onDiscard).toHaveBeenCalledWith({ uri: 'file:///cache/face-1.jpg', path: '/cache/face-1.jpg' });
+        expect(onCapture).not.toHaveBeenCalled();
+    });
+
+    it('Use Photo does not call onDiscard', async () => {
+        const onCapture = jest.fn();
+        const onDiscard = jest.fn();
+        const renderer = await mount({ onCapture, onDiscard, holdDurationMs: 0 });
+        await captureAPhoto();
+
+        await act(async () => {
+            buttonWithText(renderer, 'Use Photo').props.onPress();
+        });
+
+        expect(onCapture).toHaveBeenCalledTimes(1);
+        expect(onDiscard).not.toHaveBeenCalled();
+    });
+
+    it('a second Use Photo tap still calls onCapture', async () => {
+        const onCapture = jest.fn();
+        const onDiscard = jest.fn();
+        const renderer = await mount({ onCapture, onDiscard, holdDurationMs: 0 });
+        await captureAPhoto();
+        const { onPress } = buttonWithText(renderer, 'Use Photo').props;
+
+        await act(async () => {
+            onPress();
+        });
+        await act(async () => {
+            onPress();
+        });
+
+        expect(onCapture).toHaveBeenCalledTimes(2);
+        expect(onCapture).toHaveBeenNthCalledWith(1, { uri: 'file:///cache/face-1.jpg', path: '/cache/face-1.jpg' });
+        expect(onCapture).toHaveBeenNthCalledWith(2, { uri: 'file:///cache/face-1.jpg', path: '/cache/face-1.jpg' });
+        expect(onDiscard).not.toHaveBeenCalled();
+    });
+
+    it('Use Photo then Retake does not hand the photo to onDiscard', async () => {
+        const onCapture = jest.fn();
+        const onDiscard = jest.fn();
+        const renderer = await mount({ onCapture, onDiscard, holdDurationMs: 0 });
+        await captureAPhoto();
+
+        await act(async () => {
+            buttonWithText(renderer, 'Use Photo').props.onPress();
+        });
+        await act(async () => {
+            buttonWithText(renderer, 'Retake').props.onPress();
+        });
+
+        expect(onCapture).toHaveBeenCalledTimes(1);
+        expect(onDiscard).not.toHaveBeenCalled();
+        expect(textOf(renderer)).not.toContain('Face captured');
+    });
+
+    it('a double tap on Retake hands the photo over once', async () => {
+        const onDiscard = jest.fn();
+        const renderer = await mount({ onCapture: jest.fn(), onDiscard, holdDurationMs: 0 });
+        await captureAPhoto();
+        const { onPress } = buttonWithText(renderer, 'Retake').props;
+
+        await act(async () => {
+            onPress();
+            onPress();
+        });
+
+        expect(onDiscard).toHaveBeenCalledTimes(1);
     });
 });

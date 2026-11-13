@@ -19,6 +19,7 @@ import useFleetbase from '../hooks/use-fleetbase';
 import useStorage from '../hooks/use-storage';
 import { readOrderToken, serverErrorMessage } from '../utils/beesure-handshake';
 import { DEFAULT_PHOTO_MAX_ATTEMPTS } from '../utils/photo-capture';
+import { createTryUploader, photoTryUrl, PhotoTry, TryRole, TryUploader } from '../utils/photo-tries';
 import { toast } from '../utils/toast';
 
 import Config from 'react-native-config';
@@ -67,14 +68,33 @@ const ValidationWizardScreen = ({ route }) => {
 
     // The limit from step 0 and the tries this visit has used. The counters live here, not in the capture flow, so the remount from step 2's Back does not reset them.
     const [photoMaxAttempts, setPhotoMaxAttempts] = useState(DEFAULT_PHOTO_MAX_ATTEMPTS);
-    const captureAttempts = useRef<CaptureAttempts>({ face: 0, frontFailures: 0, backFailures: 0 });
+    const captureAttempts = useRef<CaptureAttempts>({ face: 0, frontFailures: 0, backFailures: 0, tries: { lva_face: 0, lva_id: 0, lva_id_back: 0 } });
+
+    // The uploader for this visit, made on first use because it needs the order token, and dropped with the visit's other state.
+    const tryUploader = useRef<TryUploader | null>(null);
+    const uploaderFor = (orderToken: string) => (tryUploader.current ??= createTryUploader({ presignUrl: PRESIGN_API_URL as string, tryUrl: photoTryUrl(VALIDATION_COMPLETE_API_URL as string), orderToken, driverId: driver?.id ?? '' }));
+
+    // Sends each photo try to the server in the background as it is taken. A missing token or driver is not reported here, because the submit stops with its own message.
+    // Reporting a try must never throw into the capture flow (PT4), and the final photos are still uploaded at Complete & Finish Order.
+    const handleTry = (photoTry: PhotoTry) => {
+        try {
+            const orderToken = readOrderToken(order);
+            if (orderToken && driver?.id) {
+                uploaderFor(orderToken).add(photoTry);
+            }
+        } catch (error) {
+            console.warn('ValidationWizardScreen: could not start a photo try upload:', error);
+        }
+    };
 
     // Clear tempstore if the user navigates to a different order
     useEffect(() => {
         if (store.validationOrderId !== orderData.id) {
-            captureAttempts.current = { face: 0, frontFailures: 0, backFailures: 0 };
+            captureAttempts.current = { face: 0, frontFailures: 0, backFailures: 0, tries: { lva_face: 0, lva_id: 0, lva_id_back: 0 } };
+            tryUploader.current = null;
             setValue('validationPhotos', []);
             setValue('validationPhotoChecks', null);
+            setValue('validationPhotoTryNos', null);
             setValue('validationNotes', '');
             setValue('resultScore', null);
             setValue('confidenceScore', null);
@@ -87,9 +107,10 @@ const ValidationWizardScreen = ({ route }) => {
 
     // Called once the automated face + ID document capture sequence completes (after the
     // user has had a chance to review/retake each photo). Advances straight to the scores step.
-    const handleCaptureFlowComplete = ({ facePhoto, documentFront, documentBack, checks }: CapturedPhotoSet) => {
+    const handleCaptureFlowComplete = ({ facePhoto, documentFront, documentBack, checks, tryNos }: CapturedPhotoSet) => {
         setValue('validationPhotos', [facePhoto, documentFront, documentBack]);
         setValue('validationPhotoChecks', checks);
+        setValue('validationPhotoTryNos', tryNos);
         toast.success('Face and ID photos captured.');
         setStep(2);
     };
@@ -118,43 +139,17 @@ const ValidationWizardScreen = ({ route }) => {
                 'X-BeeSure-Order-Token': orderToken,
             };
 
-            // 1. Request Pre-signed URLs from Beesure Backend
-            const presignRes = await fetch(PRESIGN_API_URL, {
-                method: 'POST',
-                headers: authHeaders,
-                body: JSON.stringify({ roles }),
-            });
-
-            if (!presignRes.ok) {
-                const bodyText = await presignRes.text().catch(() => '');
-                console.warn('Presign request failed:', presignRes.status, bodyText);
-                const serverMessage = serverErrorMessage(bodyText);
-                if (serverMessage) throw new Error(serverMessage);
-                throw new Error(`Failed to fetch pre-signed URLs (HTTP ${presignRes.status}).`);
-            }
-            const { presignedData } = await presignRes.json();
-
-            // 2. Upload each photo to its matching presigned URL - matched by role, not array
-            // index, since the backend returns presignedData tagged with the role it's for.
+            // 1. The photos are normally on the server already, uploaded in the background as each try was taken.
+            // 2. Ask the uploader for each final photo's key, which uploads it here only when its earlier upload did not go through.
             const attachments = {};
             for (let i = 0; i < roles.length; i++) {
-                const role = roles[i];
-                const localUri = photos[i];
-                const presigned = presignedData.find((p) => p.role === role);
+                const role = roles[i] as TryRole;
 
-                if (!localUri || !presigned) {
+                if (!photos[i]) {
                     throw new Error(`Missing photo or presigned URL for ${role}.`);
                 }
 
-                const imgBlob = await (await fetch(localUri)).blob();
-                const s3Res = await fetch(presigned.uploadUrl, {
-                    method: 'PUT',
-                    body: imgBlob,
-                    headers: { 'Content-Type': imgBlob.type || 'image/jpeg' },
-                });
-
-                if (!s3Res.ok) throw new Error(`S3 Upload failed for ${role}`);
-                attachments[role] = presigned.key;
+                attachments[role] = await uploaderFor(orderToken).keyFor(role, photos[i]);
             }
 
             // 3. Beesure Backend Call - save the validation report
@@ -172,7 +167,7 @@ const ValidationWizardScreen = ({ route }) => {
                 vibeCheckScore: store.vibeCheckScore,
                 subjectExists: store.subjectExists,
                 attachments,
-                phoneChecks: store.validationPhotoChecks ?? undefined,
+                phoneChecks: store.validationPhotoChecks ? Object.fromEntries(Object.entries(store.validationPhotoChecks).map(([role, check]) => [role, { ...(check as object), tryNo: store.validationPhotoTryNos?.[role] }])) : undefined,
             };
 
             const reportRes = await fetch(VALIDATION_COMPLETE_API_URL, {
@@ -196,7 +191,9 @@ const ValidationWizardScreen = ({ route }) => {
 
             // Clear the temp store
             setValue('validationPhotos', []);
+            tryUploader.current = null;
             setValue('validationPhotoChecks', null);
+            setValue('validationPhotoTryNos', null);
             setValue('validationNotes', '');
             setValue('resultScore', null);
             setValue('confidenceScore', null);
@@ -224,7 +221,7 @@ const ValidationWizardScreen = ({ route }) => {
                 indicator and instructions are overlaid on top of the camera itself instead. */}
             {step === 1 && (
                 <YStack flex={1} bg='#000'>
-                    <AutomatedCaptureFlow onComplete={handleCaptureFlowComplete} photoMaxAttempts={photoMaxAttempts} attempts={captureAttempts} />
+                    <AutomatedCaptureFlow onComplete={handleCaptureFlowComplete} photoMaxAttempts={photoMaxAttempts} attempts={captureAttempts} onTry={handleTry} />
 
                     {/* DEV BYPASS: Remove before pushing to production */}
                     {__DEV__ && (
