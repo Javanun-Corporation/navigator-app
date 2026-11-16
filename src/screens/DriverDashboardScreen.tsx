@@ -93,7 +93,7 @@ const DriverDashboardScreen = () => {
     const navigation = useNavigation();
 
     const { location } = useLocation();
-    const { allActiveOrders, nearbyOrders } = useOrderManager();
+    const { allActiveOrders, nearbyOrders, reloadActiveOrders } = useOrderManager();
 
     const mapRef = useRef(null);
     const [isFollowingUser, setIsFollowingUser] = useState(true);
@@ -107,6 +107,15 @@ const DriverDashboardScreen = () => {
         useCallback(() => {
             setIsMapMounted(true);
             return () => setIsMapMounted(false);
+        }, [])
+    );
+
+    // The accepted orders are a saved list, so fetch it again each time the Dash is shown in case an order changed on the server. The ref holds the latest reload function, so the fetch runs once per focus and not again when the list it loads re-renders the screen.
+    const reloadActiveOrdersRef = useRef(reloadActiveOrders);
+    reloadActiveOrdersRef.current = reloadActiveOrders;
+    useFocusEffect(
+        useCallback(() => {
+            reloadActiveOrdersRef.current({}, { setLoadingFlag: false });
         }, [])
     );
 

@@ -1,10 +1,13 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import { format } from 'date-fns';
 import { Order } from '@fleetbase/sdk';
 import { useAuth } from './AuthContext';
+import { useNotification } from './NotificationContext';
 import useFleetbase from '../hooks/use-fleetbase';
 import useStorage from '../hooks/use-storage';
 import { isArray } from '../utils';
+import { isOrderNotification, isReturnToForeground } from '../utils/order-refresh';
 
 function serializeCollection(collection) {
     return collection.map((resource) => resource.serialize());
@@ -19,6 +22,7 @@ const OrderManagerContext = createContext(null);
 export const OrderManagerProvider: React.FC = ({ children }) => {
     const { driver } = useAuth();
     const { fleetbase, adapter } = useFleetbase();
+    const { addNotificationListener, removeNotificationListener } = useNotification();
     const today = format(new Date(), 'yyyy-MM-dd HH:mm:ssXXX');
 
     // Local storage for caching orders
@@ -299,6 +303,43 @@ export const OrderManagerProvider: React.FC = ({ children }) => {
         },
         [fetchNearbyOrders]
     );
+
+    // Fetch the driver's orders again after the server may have changed one, so a cancelled or finished order does not stay on the Dash and the Orders badge. The ref keeps the listeners below on the latest reload functions without re-subscribing them.
+    const reloadChangedOrdersRef = useRef(() => {});
+    reloadChangedOrdersRef.current = () => {
+        reloadActiveOrders({}, { setLoadingFlag: false });
+        reloadCurrentOrders({}, { setLoadingFlag: false });
+    };
+
+    // A push notification about an order means the order changed on the server.
+    useEffect(() => {
+        const handlePushNotification = (notification) => {
+            if (isOrderNotification(notification)) {
+                reloadChangedOrdersRef.current();
+            }
+        };
+
+        addNotificationListener(handlePushNotification);
+
+        return () => {
+            removeNotificationListener(handlePushNotification);
+        };
+    }, [addNotificationListener, removeNotificationListener]);
+
+    // Orders may have changed while the app was in the background.
+    useEffect(() => {
+        let previousState = AppState.currentState;
+        const subscription = AppState.addEventListener('change', (nextState) => {
+            if (isReturnToForeground(previousState, nextState)) {
+                reloadChangedOrdersRef.current();
+            }
+            previousState = nextState;
+        });
+
+        return () => {
+            subscription.remove();
+        };
+    }, []);
 
     const value = useMemo(
         () => ({
