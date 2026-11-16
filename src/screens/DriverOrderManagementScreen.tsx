@@ -1,7 +1,7 @@
 import { faInfoCircle } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-native-fontawesome';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import { FlatList, RefreshControl } from 'react-native';
 import { Label, Separator, Switch, Text, XStack, YStack, useTheme } from 'tamagui';
 import AdhocOrderCard from '../components/AdhocOrderCard';
@@ -9,7 +9,6 @@ import OrderCard from '../components/OrderCard';
 import PastOrderCard from '../components/PastOrderCard';
 import Spacer from '../components/Spacer';
 import { useAuth } from '../contexts/AuthContext';
-import { useNotification } from '../contexts/NotificationContext';
 import { useOrderManager } from '../contexts/OrderManagerContext';
 import useAppTheme from '../hooks/use-app-theme';
 import useSocketClusterClient from '../hooks/use-socket-cluster-client';
@@ -56,7 +55,6 @@ const DriverOrderManagementScreen = () => {
         setDimissedOrders,
     } = useOrderManager();
     const { listen } = useSocketClusterClient();
-    const { addNotificationListener, removeNotificationListener } = useNotification();
     const activeCurrentOrders = currentOrders.filter((order) => !['completed', 'created', 'canceled'].includes(order.getAttribute('status')));
     const stops = countStops(activeCurrentOrders);
     const distance = sumDistance(activeCurrentOrders);
@@ -71,25 +69,6 @@ const DriverOrderManagementScreen = () => {
     // What the header counts: the assigned orders the list shows, and how many finished ones it leaves out
     const shownOrderCount = useMemo(() => listShownHeldOrders(currentOrders, dismissedOrders, showFinishedOrders).length, [currentOrders, dismissedOrders, showFinishedOrders]);
     const hiddenFinishedCount = useMemo(() => countHiddenFinishedOrders(currentOrders, dismissedOrders, showFinishedOrders), [currentOrders, dismissedOrders, showFinishedOrders]);
-
-    useEffect(() => {
-        const handlePushNotification = async (notification, action) => {
-            const { payload } = notification;
-            const id = payload.id;
-            const type = payload.type;
-
-            // If any order related push notification comes just reload current orders
-            if (typeof id === 'string' && id.startsWith('order_')) {
-                reloadCurrentOrders();
-            }
-        };
-
-        addNotificationListener(handlePushNotification);
-
-        return () => {
-            removeNotificationListener(handlePushNotification);
-        };
-    }, [addNotificationListener, removeNotificationListener]);
 
     useFocusEffect(
         useCallback(() => {
